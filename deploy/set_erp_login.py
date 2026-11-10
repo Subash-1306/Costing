@@ -30,7 +30,8 @@ def main():
             print("  ⚠️  Couldn't reach the ERP to check it (internet down?). Saving it anyway.")
         costing_config.save_erp_login(username, password)
         print(f"\n  ✅ Saved in {costing_config.ERP_LOGIN_FILE}")
-        print("  Run Restart.bat so the running dashboard picks it up.")
+        print("  Restart the dashboard so it picks it up: Restart.bat on the server,")
+        print("  or close and reopen Run-In-This-Window.bat on a laptop.")
         return 0
     print("Nothing saved.")
     return 1

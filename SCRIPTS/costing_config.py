@@ -87,28 +87,68 @@ def backup_dir():
 # Machine scope so the dashboard can read it when Windows starts it at boot
 # (as SYSTEM, before anyone signs in). Only this PC can decrypt the file.
 
-_DPAPI_LOCAL_MACHINE = 0x4
+# Calls Windows' crypt32.dll directly (ctypes, part of Python), so nothing
+# extra has to be installed.
+
+_CRYPTPROTECT_UI_FORBIDDEN = 0x1
+_CRYPTPROTECT_LOCAL_MACHINE = 0x4
+_DPAPI_FLAGS = _CRYPTPROTECT_UI_FORBIDDEN | _CRYPTPROTECT_LOCAL_MACHINE
+
+
+def _dpapi():
+    if sys.platform != "win32":
+        raise RuntimeError("Saving or reading the ERP login needs Windows.")
+    import ctypes
+    from ctypes import wintypes
+
+    class DATA_BLOB(ctypes.Structure):
+        _fields_ = [("cbData", wintypes.DWORD), ("pbData", ctypes.POINTER(ctypes.c_char))]
+
+    crypt32 = ctypes.WinDLL("crypt32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    blob_p = ctypes.POINTER(DATA_BLOB)
+    crypt32.CryptProtectData.argtypes = [blob_p, wintypes.LPCWSTR, blob_p, ctypes.c_void_p,
+                                         ctypes.c_void_p, wintypes.DWORD, blob_p]
+    crypt32.CryptProtectData.restype = wintypes.BOOL
+    crypt32.CryptUnprotectData.argtypes = [blob_p, ctypes.c_void_p, blob_p, ctypes.c_void_p,
+                                           ctypes.c_void_p, wintypes.DWORD, blob_p]
+    crypt32.CryptUnprotectData.restype = wintypes.BOOL
+    kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+    kernel32.LocalFree.restype = ctypes.c_void_p
+
+    def run(func, data, flags, *middle):
+        buf = ctypes.create_string_buffer(data, len(data))
+        blob_in = DATA_BLOB(len(data), ctypes.cast(buf, ctypes.POINTER(ctypes.c_char)))
+        blob_out = DATA_BLOB()
+        if not func(ctypes.byref(blob_in), *middle, None, None, None, flags, ctypes.byref(blob_out)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            return ctypes.string_at(blob_out.pbData, blob_out.cbData)
+        finally:
+            kernel32.LocalFree(ctypes.cast(blob_out.pbData, ctypes.c_void_p))
+
+    return crypt32, run
 
 
 def _protect(raw):
-    if sys.platform != "win32":
-        raise RuntimeError("Saving the ERP login needs Windows.")
-    import win32crypt
-    return win32crypt.CryptProtectData(raw, "Unitech costing ERP login", None, None, None, _DPAPI_LOCAL_MACHINE)
+    crypt32, run = _dpapi()
+    return run(crypt32.CryptProtectData, raw, _DPAPI_FLAGS, "Unitech costing ERP login")
 
 
 def _unprotect(blob):
-    if sys.platform != "win32":
-        raise RuntimeError("Reading the saved ERP login needs Windows.")
-    import win32crypt
-    return win32crypt.CryptUnprotectData(blob, None, None, None, _DPAPI_LOCAL_MACHINE)[1]
+    crypt32, run = _dpapi()
+    return run(crypt32.CryptUnprotectData, blob, _CRYPTPROTECT_UI_FORBIDDEN, None)
 
 
 def save_erp_login(username, password):
+    """Saves the login, then reads it back to make sure it can be decrypted."""
     os.makedirs(CONFIG_DIR, exist_ok=True)
     raw = json.dumps({"username": username, "password": password}).encode("utf-8")
+    blob = _protect(raw)
+    if _unprotect(blob) != raw:
+        raise RuntimeError("Windows encrypted the login but couldn't read it back - nothing saved.")
     with open(ERP_LOGIN_FILE, "wb") as f:
-        f.write(base64.b64encode(_protect(raw)))
+        f.write(base64.b64encode(blob))
 
 
 def load_erp_login():
