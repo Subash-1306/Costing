@@ -54,7 +54,9 @@ def main():
         print("   so nothing writes to the files while they are replaced.")
         return 1
 
-    names = sorted(f for f in os.listdir(source) if f.lower().endswith(".db") and "_backup_" not in f.lower())
+    # Sync_Log.db is this install's own run history - keep it, don't copy another PC's over it
+    names = sorted(f for f in os.listdir(source)
+                   if f.lower().endswith(".db") and "_backup_" not in f.lower() and f.lower() != "sync_log.db")
     if not names:
         print(f"❌ No .db files in {source}")
         return 1
