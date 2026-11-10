@@ -1,0 +1,353 @@
+{% extends "base.html" %}
+
+{% macro trend_badge(value, suffix='%') %}
+  {% if value is none %}
+  <div class="trend-badge trend-flat">—</div>
+  {% elif value > 0 %}
+  <div class="trend-badge trend-up">▲ {{ value }}{{ suffix }}</div>
+  {% elif value < 0 %}
+  <div class="trend-badge trend-down">▼ {{ value|abs }}{{ suffix }}</div>
+  {% else %}
+  <div class="trend-badge trend-flat">— 0{{ suffix }}</div>
+  {% endif %}
+{% endmacro %}
+
+{% block content %}
+
+<form id="filter-form" method="get" class="overview-filters">
+  <div class="overview-filter-row">
+    <label>From <input type="text" name="from_date" value="{{ from_date }}" placeholder="dd/mm/yyyy"></label>
+    <label>To <input type="text" name="to_date" value="{{ to_date }}" placeholder="dd/mm/yyyy"></label>
+    <label class="checkbox-label">
+      <input type="checkbox" name="include_missing" value="1" {{ 'checked' if include_missing else '' }}>
+      Include lines with missing cost data
+    </label>
+    <button type="submit">Apply</button>
+  </div>
+  {% if available_units %}
+  <div class="overview-filter-row units-row">
+    <span class="units-label">Units:</span>
+    {% for u in available_units %}
+    <label class="checkbox-label">
+      <input type="checkbox" name="units" value="{{ u }}" {{ 'checked' if u in selected_units else '' }}>
+      {{ u }}
+    </label>
+    {% endfor %}
+    <span class="units-hint">(none selected = all units)</span>
+  </div>
+  {% endif %}
+</form>
+
+<div class="tree-summary">
+  <div class="summary-item">
+    <div class="kpi-icon blue">💰</div>
+    <div class="summary-label">Total revenue</div>
+    <div class="summary-value">₹{{ total_revenue|commafy }}</div>
+    {{ trend_badge(trends.revenue) }}
+  </div>
+  <div class="summary-item">
+    <div class="kpi-icon green">🧾</div>
+    <div class="summary-label">Total cost</div>
+    <div class="summary-value">₹{{ total_cost|commafy }}</div>
+    {{ trend_badge(trends.cost) }}
+  </div>
+  <div class="summary-item total-summary">
+    <div class="kpi-icon purple">📈</div>
+    <div class="summary-label">Total margin</div>
+    <div class="summary-value">₹{{ total_margin|commafy }}</div>
+    <div class="summary-sub">{{ margin_pct }}% of cost</div>
+    {{ trend_badge(trends.margin) }}
+  </div>
+  <div class="summary-item">
+    <div class="kpi-icon orange">📊</div>
+    <div class="summary-label">Margin %</div>
+    <div class="summary-value">{{ margin_pct }}%</div>
+    {{ trend_badge(trends.margin_pct, suffix=' pts') }}
+  </div>
+  <div class="summary-item {{ 'missing-summary' if missing_lines else '' }}">
+    <div class="kpi-icon pink">⚠️</div>
+    <div class="summary-label">Missing cost data</div>
+    <div class="summary-value">{{ missing_lines }}</div>
+    <div class="summary-sub">of {{ total_lines }} sold line(s)</div>
+    {{ trend_badge(trends.missing_lines) }}
+  </div>
+</div>
+<div class="prev-period-note">vs previous period ({{ prev_from }} &ndash; {{ prev_to }})</div>
+
+<div class="chart-grid">
+  <div class="chart-panel">
+    <h3>Margin by unit</h3>
+    <canvas id="unitChart"></canvas>
+  </div>
+  <div class="chart-panel">
+    <h3>Customer-wise sales vs margin</h3>
+    <canvas id="customerChart"></canvas>
+  </div>
+</div>
+
+<div class="chart-panel">
+  <h3>Sales &amp; margin trend</h3>
+  <canvas id="trendChart"></canvas>
+</div>
+
+<div class="overview-grid">
+  <div class="overview-panel">
+    <h3>By customer</h3>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Customer</th><th>Revenue</th><th>Cost</th><th>Margin</th><th>Margin %</th></tr></thead>
+        <tbody>
+          {% for r in by_customer %}
+          <tr class="{{ 'negative-margin' if r.margin < 0 else '' }}">
+            <td>{{ r.key }}</td>
+            <td>₹{{ r.revenue|commafy }}</td>
+            <td>₹{{ r.cost|commafy }}</td>
+            <td>₹{{ r.margin|commafy }}</td>
+            <td>{{ r.margin_pct }}%</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% if not by_customer %}<div class="empty-state"><p>No sales in this range.</p></div>{% endif %}
+    </div>
+  </div>
+
+  <div class="overview-panel">
+    <h3>By unit</h3>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Unit</th><th>Revenue</th><th>Cost</th><th>Margin</th><th>Margin %</th></tr></thead>
+        <tbody>
+          {% for r in by_unit %}
+          <tr class="{{ 'negative-margin' if r.margin < 0 else '' }}">
+            <td>{{ r.key }}</td>
+            <td>₹{{ r.revenue|commafy }}</td>
+            <td>₹{{ r.cost|commafy }}</td>
+            <td>₹{{ r.margin|commafy }}</td>
+            <td>{{ r.margin_pct }}%</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% if not by_unit %}<div class="empty-state"><p>No sales in this range.</p></div>{% endif %}
+    </div>
+  </div>
+</div>
+
+<div class="overview-panel">
+  <h3>By month</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Month</th><th>Revenue</th><th>Cost</th><th>Margin</th><th>Margin %</th></tr></thead>
+      <tbody>
+        {% for r in by_month %}
+        <tr class="{{ 'negative-margin' if r.margin < 0 else '' }}">
+          <td>{{ r.key }}</td>
+          <td>₹{{ r.revenue|commafy }}</td>
+          <td>₹{{ r.cost|commafy }}</td>
+          <td>₹{{ r.margin|commafy }}</td>
+          <td>{{ r.margin_pct }}%</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% if not by_month %}<div class="empty-state"><p>No sales in this range.</p></div>{% endif %}
+  </div>
+</div>
+
+{% if negative_fgs %}
+<div class="overview-panel">
+  <h3>Negative-margin FGs (this period)</h3>
+  <div class="table-wrap">
+    <table id="negative-fg-table">
+      <thead><tr><th>FG code</th><th>Qty sold</th><th>Revenue</th><th>Cost</th><th>Margin</th></tr></thead>
+      <tbody>
+        {% for r in negative_fgs %}
+        <tr class="negative-margin negative-fg-row" data-fg-code="{{ r.key }}" title="Double-click for full summary">
+          <td>{{ r.key }}</td>
+          <td>{{ r.qty }}</td>
+          <td>₹{{ r.revenue|commafy }}</td>
+          <td>₹{{ r.cost|commafy }}</td>
+          <td>₹{{ r.margin|commafy }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+
+<div id="fg-modal-backdrop" class="modal-backdrop" onclick="closeFgSummary(event)" style="display:none;">
+  <div class="modal-panel">
+    <div class="modal-header">
+      <h3 id="fg-modal-title">Summary</h3>
+      <button class="modal-close" onclick="closeFgSummary()">✕</button>
+    </div>
+    <div id="fg-modal-body" class="modal-body">
+      <div class="empty-state"><p>Loading...</p></div>
+    </div>
+  </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script id="overview-chart-data" type="application/json">{{ {"by_unit": by_unit, "by_customer": by_customer, "by_month": by_month, "filters": {"from_date": from_date, "to_date": to_date, "units": selected_units, "include_missing": include_missing}}|tojson }}</script>
+<script>
+// Data lives in an inert JSON script block, never interpreted as JS itself,
+// then parsed here - this way nothing in the actual data (customer names,
+// FG codes, etc.) can ever be misread as JavaScript syntax, no matter what
+// characters it contains.
+const CHART_DATA = JSON.parse(document.getElementById('overview-chart-data').textContent);
+
+const CHART_COLORS = {
+  sales: '#4f7cff',
+  margin: '#16a34a',
+  grid: 'rgba(26,34,51,0.08)',
+  text: '#6b7684',
+};
+
+// Wrapped in try/catch so a Chart.js load failure (e.g. a CDN blip) can't
+// cascade into breaking the rest of the page's JS, like the double-click
+// summary popup below, which has nothing to do with charts. Everything
+// that touches the global Chart object - including these two defaults
+// lines, which reference it just as much as new Chart(...) does - has to
+// be inside this block, not just the constructor calls themselves.
+try {
+
+Chart.defaults.color = CHART_COLORS.text;
+Chart.defaults.borderColor = CHART_COLORS.grid;
+
+// ---- Margin by unit (single-series bar) ----
+const byUnit = CHART_DATA.by_unit;
+new Chart(document.getElementById('unitChart'), {
+  type: 'bar',
+  data: {
+    labels: byUnit.map(r => r.key),
+    datasets: [{ label: 'Margin (₹)', data: byUnit.map(r => r.margin), backgroundColor: CHART_COLORS.margin }],
+  },
+  options: {
+    responsive: true,
+    plugins: { legend: { display: false } },
+    scales: { y: { beginAtZero: true, title: { display: true, text: 'Margin (₹)' } } },
+  },
+});
+
+// ---- Customer-wise sales vs margin (grouped horizontal bar, top 10 by revenue) ----
+const byCustomer = [...CHART_DATA.by_customer].sort((a, b) => b.revenue - a.revenue).slice(0, 10);
+new Chart(document.getElementById('customerChart'), {
+  type: 'bar',
+  data: {
+    labels: byCustomer.map(r => r.key),
+    datasets: [
+      { label: 'Sales (₹)', data: byCustomer.map(r => r.revenue), backgroundColor: CHART_COLORS.sales },
+      { label: 'Margin (₹)', data: byCustomer.map(r => r.margin), backgroundColor: CHART_COLORS.margin },
+    ],
+  },
+  options: {
+    indexAxis: 'y',
+    responsive: true,
+    plugins: { legend: { position: 'top' } },
+    scales: { x: { beginAtZero: true, title: { display: true, text: '₹' } } },
+  },
+});
+
+// ---- Sales & margin trend (bar + line combo, dual axis, chronological by month) ----
+const byMonth = CHART_DATA.by_month;
+new Chart(document.getElementById('trendChart'), {
+  type: 'bar',
+  data: {
+    labels: byMonth.map(r => r.key),
+    datasets: [
+      { type: 'bar', label: 'Sales (₹)', data: byMonth.map(r => r.revenue), backgroundColor: CHART_COLORS.sales, yAxisID: 'y', order: 2 },
+      { type: 'line', label: 'Margin (₹)', data: byMonth.map(r => r.margin), borderColor: CHART_COLORS.margin,
+        backgroundColor: CHART_COLORS.margin, tension: 0.3, yAxisID: 'y1', pointRadius: 5, pointHoverRadius: 7, order: 1 },
+    ],
+  },
+  options: {
+    responsive: true,
+    plugins: { legend: { position: 'top' } },
+    scales: {
+      y: { type: 'linear', position: 'left', beginAtZero: true, title: { display: true, text: 'Sales (₹)' } },
+      y1: { type: 'linear', position: 'right', beginAtZero: true, title: { display: true, text: 'Margin (₹)' }, grid: { drawOnChartArea: false } },
+    },
+  },
+});
+
+} catch (err) {
+  console.error('Chart rendering failed (page still works otherwise):', err);
+}
+
+// ---- Negative-margin FG summary popup ----
+function showOverviewFgSummary(fgCode) {
+  const backdrop = document.getElementById('fg-modal-backdrop');
+  const body = document.getElementById('fg-modal-body');
+  const title = document.getElementById('fg-modal-title');
+
+  title.textContent = fgCode;
+  body.innerHTML = '<div class="empty-state"><p>Loading...</p></div>';
+  backdrop.style.display = 'flex';
+
+  const f = CHART_DATA.filters;
+  const params = new URLSearchParams({
+    fg_code: fgCode, from_date: f.from_date, to_date: f.to_date,
+    include_missing: f.include_missing ? '1' : '0',
+  });
+  (f.units || []).forEach(u => params.append('units', u));
+
+  fetch('/overview/fg_detail?' + params.toString())
+    .then(res => res.json())
+    .then(data => {
+      if (data.error) {
+        body.innerHTML = `<div class="empty-state"><p>❌ ${data.error}</p></div>`;
+        return;
+      }
+
+      const fmtMoney = (v) => '₹' + v.toLocaleString('en-IN', { maximumFractionDigits: 2 });
+
+      let html = `
+        <div class="fg-summary-kpis">
+          <div class="fg-kpi"><div class="fg-kpi-label">Total qty sold</div><div class="fg-kpi-value">${data.total_qty}</div></div>
+          <div class="fg-kpi"><div class="fg-kpi-label">Total revenue</div><div class="fg-kpi-value">${fmtMoney(data.total_revenue)}</div></div>
+          <div class="fg-kpi"><div class="fg-kpi-label">Total cost</div><div class="fg-kpi-value">${fmtMoney(data.total_cost)}</div></div>
+          <div class="fg-kpi fg-kpi-accent"><div class="fg-kpi-label">Total margin</div><div class="fg-kpi-value">${fmtMoney(data.total_margin)}</div></div>
+        </div>
+        <div class="fg-summary-subheading">Breakdown by month, unit and customer for this period — worst margin first</div>
+        <table class="fg-summary-table">
+          <thead>
+            <tr><th>Month</th><th>Unit</th><th>Customer</th><th>Qty</th><th>Revenue</th><th>Cost</th><th>Margin</th></tr>
+          </thead>
+          <tbody>`;
+      data.breakdown.forEach(r => {
+        html += `<tr class="${r.margin < 0 ? 'negative-margin' : ''}">
+          <td>${r.month}</td>
+          <td>${r.unit}</td>
+          <td>${r.customer}</td>
+          <td>${r.qty}</td>
+          <td>${fmtMoney(r.revenue)}</td>
+          <td>${fmtMoney(r.cost)}${r.is_missing ? ' <span class="missing-chip">partial</span>' : ''}</td>
+          <td>${fmtMoney(r.margin)}</td>
+        </tr>`;
+      });
+      html += '</tbody></table>';
+
+      body.innerHTML = html;
+    })
+    .catch(err => {
+      body.innerHTML = `<div class="empty-state"><p>❌ ${err}</p></div>`;
+    });
+}
+
+function closeFgSummary(event) {
+  if (event && event.target !== event.currentTarget) return;
+  document.getElementById('fg-modal-backdrop').style.display = 'none';
+}
+
+document.querySelector('#negative-fg-table tbody')?.addEventListener('dblclick', (e) => {
+  const row = e.target.closest('tr.negative-fg-row');
+  if (!row) return;
+  showOverviewFgSummary(row.dataset.fgCode);
+});
+</script>
+{% endblock %}

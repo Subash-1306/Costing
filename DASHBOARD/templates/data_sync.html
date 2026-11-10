@@ -1,0 +1,403 @@
+{% extends "base.html" %}
+
+{% block content %}
+
+<div class="grid">
+  {% for key, info in scripts.items() %}
+  <div class="card" id="card-{{ key }}" data-needs-login="{{ '1' if (info.needs_login and not erp_login_ready) else '' }}">
+    <div class="card-header">
+      <h2>{{ info.label }}</h2>
+      <p class="desc">{{ info.description }}</p>
+    </div>
+
+    {% if info.needs_month %}
+    <div class="month-inputs">
+      <input type="number" id="year-{{ key }}" placeholder="Year (e.g. 2026)" min="2020" max="2100">
+      <input type="number" id="month-{{ key }}" placeholder="Month (1-12)" min="1" max="12">
+    </div>
+    {% endif %}
+
+    {% if info.has_store_download %}
+    <div class="card-actions">
+      <a class="download-btn" href="/process_master/download_missing">Download missing stores</a>
+    </div>
+    <div class="upload-row">
+      <input type="file" id="store-file-{{ key }}" accept=".xlsx">
+    </div>
+    <button class="run-btn" onclick="uploadMissingStores('{{ key }}')">Upload filled</button>
+    <div class="save-status" id="store-upload-status-{{ key }}"></div>
+    {% endif %}
+
+    <div class="card-actions">
+      {% if info.has_store_download %}
+      {# Run is redundant here - "Upload filled" above is the primary action #}
+      {% elif info.has_upload %}
+      <button class="run-btn" onclick="uploadAndRun('{{ key }}')">Upload &amp; Run</button>
+      {% else %}
+      <button class="run-btn" onclick="runScript('{{ key }}')">Run</button>
+      {% endif %}
+      <a class="download-btn" href="/download/{{ key }}" id="download-{{ key }}">Download DB</a>
+    </div>
+
+    {% if key in range_download_keys %}
+    <div class="range-download-row">
+      <input type="text" id="from-date-{{ key }}" placeholder="From (dd/mm/yyyy)">
+      <input type="text" id="to-date-{{ key }}" placeholder="To (dd/mm/yyyy)">
+      <button onclick="downloadRange('{{ key }}')">Download range</button>
+    </div>
+    <div class="save-status" id="range-status-{{ key }}"></div>
+    {% endif %}
+
+    <div class="status" id="status-{{ key }}"></div>
+
+    <div class="progress-bar-track" id="progress-track-{{ key }}" style="display:none;">
+      <div class="progress-bar-fill" id="progress-fill-{{ key }}"></div>
+    </div>
+
+    <a class="log-toggle" id="log-toggle-{{ key }}" style="display:none;" onclick="toggleLog('{{ key }}')">Show details</a>
+    <pre class="log" id="log-{{ key }}"></pre>
+  </div>
+  {% endfor %}
+
+  <div class="card" id="card-other-sales">
+    <div class="card-header">
+      <h2>Other Sales (manual upload)</h2>
+      <p class="desc">Sales not made through the ERP. Download the template, fill it in, upload it. Exact duplicate rows are skipped, so uploading the same file twice is safe.</p>
+    </div>
+    <div class="card-actions">
+      <a class="download-btn" href="/other_sales/template">Download template</a>
+      <a class="download-btn" href="/other_sales/download">Download uploaded</a>
+    </div>
+    <div class="upload-row">
+      <input type="file" id="other-sales-file" accept=".xlsx">
+    </div>
+    <div class="card-actions">
+      <button class="run-btn" onclick="uploadOtherSales()">Upload</button>
+    </div>
+    <div class="save-status" id="other-sales-status" style="white-space: pre-line;"></div>
+  </div>
+</div>
+
+<div id="login-backdrop" class="modal-backdrop" style="display:none;">
+  <form class="modal-panel login-panel" id="login-form" autocomplete="off" onsubmit="submitLogin(event)">
+    <div class="modal-header">
+      <h3 id="login-title">ERP login</h3>
+      <button type="button" class="modal-close" onclick="closeLogin()">✕</button>
+    </div>
+    <div class="login-body">
+      <p class="login-note">The dashboard didn't get your login when it started. It will be used until you close the dashboard and isn't saved anywhere.</p>
+      <label>Username
+        <input type="text" id="login-username" autocomplete="off" required>
+      </label>
+      <label>Password
+        <input type="password" id="login-password" autocomplete="new-password" required>
+      </label>
+      <div class="login-actions">
+        <button type="button" class="download-btn" onclick="closeLogin()">Cancel</button>
+        <button type="submit" class="run-btn">Log in &amp; Run</button>
+      </div>
+    </div>
+  </form>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+// Pulls a "Progress: X/Y" style line (our scripts print these) out of the
+// log so far and turns it into a percentage for the progress bar. Falls
+// back to an indeterminate pulsing bar if no such line has appeared yet.
+function updateProgressFromLog(key, fullLogText) {
+  const matches = [...fullLogText.matchAll(/Progress:\s*(\d+)\s*\/\s*(\d+)/g)];
+  const track = document.getElementById(`progress-track-${key}`);
+  const fill = document.getElementById(`progress-fill-${key}`);
+  track.style.display = "block";
+
+  if (matches.length > 0) {
+    const [, done, total] = matches[matches.length - 1];
+    const pct = Math.min(100, Math.round((done / total) * 100));
+    fill.style.width = pct + "%";
+    fill.classList.remove("indeterminate");
+    fill.textContent = pct + "%";
+  } else {
+    fill.classList.add("indeterminate");
+    fill.style.width = "100%";
+    fill.textContent = "";
+  }
+}
+
+function toggleLog(key) {
+  const logEl = document.getElementById(`log-${key}`);
+  const toggleEl = document.getElementById(`log-toggle-${key}`);
+  const isVisible = logEl.classList.toggle("visible");
+  toggleEl.textContent = isVisible ? "Hide details" : "Show details";
+}
+
+function startStreaming(key, job_id) {
+  const statusEl = document.getElementById(`status-${key}`);
+  const logEl = document.getElementById(`log-${key}`);
+  const toggleEl = document.getElementById(`log-toggle-${key}`);
+  const btn = document.querySelector(`#card-${key} .run-btn`);
+
+  toggleEl.style.display = "inline";
+  statusEl.textContent = "Running...";
+  statusEl.className = "status running";
+  btn.disabled = true;
+
+  const evtSource = new EventSource(`/stream/${job_id}`);
+
+  evtSource.onmessage = function(event) {
+    logEl.textContent += event.data + "\n";
+    logEl.scrollTop = logEl.scrollHeight;
+    updateProgressFromLog(key, logEl.textContent);
+  };
+
+  evtSource.addEventListener("done", function(event) {
+    const returncode = event.data;
+    const track = document.getElementById(`progress-track-${key}`);
+    const fill = document.getElementById(`progress-fill-${key}`);
+    fill.classList.remove("indeterminate");
+
+    if (returncode === "0") {
+      statusEl.textContent = "✅ Done";
+      statusEl.className = "status success";
+      fill.style.width = "100%";
+      fill.textContent = "100%";
+    } else {
+      statusEl.textContent = "❌ Finished with errors (see details)";
+      statusEl.className = "status error";
+    }
+    btn.disabled = false;
+    evtSource.close();
+  });
+
+  evtSource.onerror = function() {
+    statusEl.textContent = "⚠️ Connection lost";
+    statusEl.className = "status error";
+    btn.disabled = false;
+    evtSource.close();
+  };
+}
+
+// ---- ERP login fallback: only shown if the login wasn't typed when the dashboard started ----
+let pendingLoginKey = null;
+
+function runScript(key) {
+  const card = document.getElementById(`card-${key}`);
+  if (card && card.dataset.needsLogin) {
+    pendingLoginKey = key;
+    const label = card.querySelector('.card-header h2')?.textContent || 'this script';
+    document.getElementById('login-title').textContent = `ERP login - ${label}`;
+    document.getElementById('login-username').value = '';
+    document.getElementById('login-password').value = '';
+    document.getElementById('login-backdrop').style.display = 'flex';
+    document.getElementById('login-username').focus();
+    return;
+  }
+  startRun(key, null);
+}
+
+function closeLogin() {
+  document.getElementById('login-password').value = '';
+  document.getElementById('login-backdrop').style.display = 'none';
+  pendingLoginKey = null;
+}
+
+function submitLogin(event) {
+  event.preventDefault();
+  const username = document.getElementById('login-username').value.trim();
+  const password = document.getElementById('login-password').value;
+  if (!username || !password || !pendingLoginKey) return;
+  const key = pendingLoginKey;
+  closeLogin();                       // wipes the password box straight away
+  // The dashboard now remembers it, so no other card needs to ask.
+  document.querySelectorAll('[data-needs-login]').forEach(c => { c.dataset.needsLogin = ''; });
+  startRun(key, { username, password });
+}
+
+function startRun(key, login) {
+  const btn = document.querySelector(`#card-${key} .run-btn`);
+  const statusEl = document.getElementById(`status-${key}`);
+  const logEl = document.getElementById(`log-${key}`);
+
+  logEl.textContent = "";
+  statusEl.textContent = "Starting...";
+  statusEl.className = "status running";
+  btn.disabled = true;
+
+  const body = {};
+  const yearInput = document.getElementById(`year-${key}`);
+  const monthInput = document.getElementById(`month-${key}`);
+  if (yearInput) body.year = yearInput.value;
+  if (monthInput) body.month = monthInput.value;
+  if (login) { body.username = login.username; body.password = login.password; }
+
+  fetch(`/start/${key}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body)
+  })
+    .then(res => res.json())
+    .then(data => {
+      if (data.error) {
+        statusEl.textContent = "❌ " + data.error;
+        statusEl.className = "status error";
+        btn.disabled = false;
+        return;
+      }
+      startStreaming(key, data.job_id);
+    })
+    .catch(err => {
+      statusEl.textContent = "❌ " + err;
+      statusEl.className = "status error";
+      btn.disabled = false;
+    });
+}
+
+function uploadAndRun(key) {
+  const btn = document.querySelector(`#card-${key} .run-btn`);
+  const statusEl = document.getElementById(`status-${key}`);
+  const logEl = document.getElementById(`log-${key}`);
+  const fileInput = document.getElementById(`file-${key}`);
+
+  if (!fileInput.files.length) {
+    statusEl.textContent = "❌ Please choose a CSV file first";
+    statusEl.className = "status error";
+    return;
+  }
+
+  logEl.textContent = "";
+  statusEl.textContent = "Uploading...";
+  statusEl.className = "status running";
+  btn.disabled = true;
+
+  const formData = new FormData();
+  formData.append("file", fileInput.files[0]);
+
+  fetch(`/upload/${key}`, {
+    method: "POST",
+    body: formData
+  })
+    .then(res => res.json())
+    .then(data => {
+      if (data.error) {
+        statusEl.textContent = "❌ " + data.error;
+        statusEl.className = "status error";
+        btn.disabled = false;
+        return;
+      }
+      startStreaming(key, data.job_id);
+    })
+    .catch(err => {
+      statusEl.textContent = "❌ " + err;
+      statusEl.className = "status error";
+      btn.disabled = false;
+    });
+}
+
+// On page load, check every card: is a job already running (or did one
+// just finish) that this tab doesn't know about yet? This is what makes
+// navigating away and back show the real current state instead of
+// looking blank/stopped.
+document.addEventListener("DOMContentLoaded", function() {
+  const cardKeys = [...document.querySelectorAll(".card")].map(c => c.id.replace("card-", ""));
+  cardKeys.forEach(key => {
+    fetch(`/status/${key}`)
+      .then(res => res.json())
+      .then(data => {
+        if (data.job_id) {
+          startStreaming(key, data.job_id);
+        }
+      });
+  });
+});
+function uploadOtherSales() {
+  const fileInput = document.getElementById('other-sales-file');
+  const statusEl = document.getElementById('other-sales-status');
+
+  if (!fileInput.files.length) {
+    statusEl.textContent = "❌ Please choose a file first";
+    statusEl.className = "save-status error";
+    return;
+  }
+  statusEl.textContent = "Uploading...";
+  statusEl.className = "save-status running";
+
+  const formData = new FormData();
+  formData.append("file", fileInput.files[0]);
+
+  // textContent (not innerHTML) everywhere below: messages contain values
+  // typed into the uploaded file, which must be shown as plain text
+  fetch('/other_sales/upload', { method: 'POST', body: formData })
+    .then(res => res.json())
+    .then(data => {
+      if (data.error) {
+        statusEl.textContent = "❌ " + data.error + (data.details ? "\n" + data.details.join("\n") : "");
+        statusEl.className = "save-status error";
+        return;
+      }
+      let msg = `✅ Added ${data.added} row(s). Skipped ${data.skipped_duplicates} duplicate(s).`;
+      msg += `\nOverview includes them straight away. For Part-wise Margin and costs, now re-run Weighted Selling Price, and BOM Register for: ${data.months.join(", ")}.`;
+      if (data.unknown_count) {
+        msg += `\n⚠️ ${data.unknown_count} FG code(s) not found in Item Master (check they're your FG codes, not customer part numbers): ${data.unknown_codes.join(", ")}${data.unknown_count > data.unknown_codes.length ? ", ..." : ""}`;
+      }
+      statusEl.textContent = msg;
+      statusEl.className = "save-status success";
+      fileInput.value = "";
+    })
+    .catch(err => {
+      statusEl.textContent = "❌ " + err;
+      statusEl.className = "save-status error";
+    });
+}
+
+function uploadMissingStores(key) {
+  const fileInput = document.getElementById(`store-file-${key}`);
+  const statusEl = document.getElementById(`store-upload-status-${key}`);
+
+  if (!fileInput.files.length) {
+    statusEl.textContent = "❌ Please choose a file first";
+    statusEl.className = "save-status error";
+    return;
+  }
+
+  statusEl.textContent = "Uploading...";
+  statusEl.className = "save-status running";
+
+  const formData = new FormData();
+  formData.append("file", fileInput.files[0]);
+
+  fetch('/process_master/upload_missing', { method: 'POST', body: formData })
+    .then(res => res.json())
+    .then(data => {
+      if (data.error) {
+        statusEl.textContent = "❌ " + data.error;
+        statusEl.className = "save-status error";
+        return;
+      }
+      statusEl.textContent = `✅ Updated ${data.updated} store(s). Skipped ${data.skipped_blank} blank.`;
+      statusEl.className = "save-status success";
+    })
+    .catch(err => {
+      statusEl.textContent = "❌ " + err;
+      statusEl.className = "save-status error";
+    });
+}
+
+function downloadRange(key) {
+  const fromDate = document.getElementById(`from-date-${key}`).value.trim();
+  const toDate = document.getElementById(`to-date-${key}`).value.trim();
+  const statusEl = document.getElementById(`range-status-${key}`);
+
+  const dateRegex = /^\d{2}\/\d{2}\/\d{4}$/;
+  if (!dateRegex.test(fromDate) || !dateRegex.test(toDate)) {
+    statusEl.textContent = "❌ Use dd/mm/yyyy format for both dates";
+    statusEl.className = "save-status error";
+    return;
+  }
+
+  statusEl.textContent = "";
+  window.location = `/data_sync/download_range/${key}?from_date=${encodeURIComponent(fromDate)}&to_date=${encodeURIComponent(toDate)}`;
+}
+</script>
+{% endblock %}

@@ -1,0 +1,241 @@
+{% extends "base.html" %}
+
+{% block content %}
+
+{% if not item_master_ready %}
+<div class="callout error-callout">
+  <strong>Item Master hasn't been run for {{ months|selectattr("key", "equalto", selected_month)|map(attribute="label")|first }} yet.</strong>
+  <div>Go to Data Sync and run Item Master for this month first, then come back here.</div>
+</div>
+
+{% else %}
+
+{% if missing_item_types %}
+<div class="callout warning-callout">
+  <strong>{{ missing_item_types|length }} item code(s) have no Item Type this month</strong> (not found in Item Master) -
+  these are excluded from every bucket below until fixed:
+  <div class="missing-list">
+    {% for code in missing_item_types %}<span class="missing-chip">{{ code }}</span>{% endfor %}
+  </div>
+  <div class="callout-actions">
+    <a class="download-btn" href="/month_posting/download_missing_types?month={{ selected_month }}">Download missing types</a>
+    <input type="file" id="item-type-file" accept=".xlsx">
+    <button onclick="uploadItemTypes()">Upload filled</button>
+  </div>
+  <div id="item-type-upload-status" class="save-status"></div>
+</div>
+{% endif %}
+
+{% set filter_fields = ["company", "unit", "store", "process", "item_code", "item_name", "uom"] %}
+
+<form id="filter-form" method="get">
+  <input type="hidden" name="month" value="{{ selected_month }}">
+  <div class="table-wrap">
+    <table id="part-cost-table">
+      <thead>
+        <tr>
+          <th>Company</th>
+          <th>Unit</th>
+          <th>Store</th>
+          <th>Process</th>
+          <th>Item code</th>
+          <th>Item name</th>
+          <th>UOM</th>
+          <th>Acc qty</th>
+          <th>Prod qty</th>
+          <th>Sum RM cost</th>
+          <th>Sum Cons cost</th>
+          <th>Sum BOP cost</th>
+          <th>RM cost/part</th>
+          <th>Cons cost/part</th>
+          <th>BOP cost/part</th>
+          <th>%Bay/Booth utilization</th>
+          {% for key, label in overhead_fields %}
+          <th>{{ label }}/part</th>
+          {% endfor %}
+          <th class="total-col">Total cost/part</th>
+        </tr>
+        <tr class="filter-row">
+          {% for field in filter_fields %}
+          <th><input type="text" name="{{ field }}" value="{{ filters.get(field, '') }}" onchange="submitFilters()"></th>
+          {% endfor %}
+          {# 9 non-filterable numeric columns, 1 per overhead category, plus the grand total #}
+          {% for i in range(9 + (overhead_fields|length) + 1) %}
+          <th></th>
+          {% endfor %}
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in rows %}
+        <tr class="part-cost-row" data-unit="{{ row.unit }}" data-store="{{ row.store }}" data-process="{{ row.process }}" data-item-code="{{ row.item_code }}" title="Double-click for material detail">
+          <td>{{ row.company }}</td>
+          <td>{{ row.unit }}</td>
+          <td>{{ row.store }}</td>
+          <td>{{ row.process }}</td>
+          <td>{{ row.item_code }}</td>
+          <td>{{ row.item_name }}</td>
+          <td>{{ row.uom }}</td>
+          <td>{{ row.acc_qty }}</td>
+          <td>{{ row.prod_qty }}</td>
+          <td>₹{{ row.rm_cost|commafy }}</td>
+          <td>₹{{ row.cons_cost|commafy }}</td>
+          <td>₹{{ row.bop_cost|commafy }}</td>
+          <td>₹{{ row.rm_cost_per_part|commafy }}</td>
+          <td>₹{{ row.cons_cost_per_part|commafy }}</td>
+          <td>₹{{ row.bop_cost_per_part|commafy }}</td>
+          <td>{{ row.utilization_pct }}%</td>
+          {% for key, label in overhead_fields %}
+          <td>₹{{ row[key ~ '_per_part']|commafy }}</td>
+          {% endfor %}
+          <td class="total-col">₹{{ row.total_cost_per_part|commafy }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% if not rows %}
+    <div class="empty-state"><p>No rows match{{ ' this filter' if filters.values()|select|list else ' for this month' }}.</p></div>
+    {% endif %}
+  </div>
+</form>
+
+<div class="pagination">
+  <span>{{ total_count }} row(s) total &middot; page {{ page }} of {{ total_pages }}</span>
+  <div class="pagination-buttons">
+    <button onclick="goToPage({{ page - 1 }})" {{ 'disabled' if page <= 1 else '' }}>Previous</button>
+    <button onclick="goToPage({{ page + 1 }})" {{ 'disabled' if page >= total_pages else '' }}>Next</button>
+  </div>
+</div>
+
+<p class="tree-note">Double-click any row to see the full material breakdown behind its cost.</p>
+
+<div id="material-modal-backdrop" class="modal-backdrop" onclick="closeMaterialDetail(event)" style="display:none;">
+  <div class="modal-panel">
+    <div class="modal-header">
+      <h3 id="material-modal-title">Material detail</h3>
+      <button class="modal-close" onclick="closeMaterialDetail()">✕</button>
+    </div>
+    <div id="material-modal-body" class="modal-body">
+      <div class="empty-state"><p>Loading...</p></div>
+    </div>
+  </div>
+</div>
+
+{% endif %}
+
+<script>
+function submitFilters() {
+  const form = document.getElementById('filter-form');
+  let pageInput = form.querySelector('input[name="page"]');
+  if (pageInput) pageInput.remove();
+  form.submit();
+}
+
+function goToPage(page) {
+  const url = new URL(window.location);
+  url.searchParams.set('page', page);
+  window.location = url;
+}
+
+// Event delegation on the tbody, reading values from data-* attributes
+// rather than embedding them directly into inline onclick="..." JS - a
+// value containing a quote or special character would otherwise break the
+// inline string literal (this bit us before on Overview's chart data).
+document.querySelector('#part-cost-table tbody')?.addEventListener('dblclick', (e) => {
+  const row = e.target.closest('tr.part-cost-row');
+  if (!row) return;
+  showMaterialDetail(row.dataset.unit, row.dataset.store, row.dataset.process, row.dataset.itemCode);
+});
+
+function showMaterialDetail(unit, store, process, itemCode) {
+  const backdrop = document.getElementById('material-modal-backdrop');
+  const body = document.getElementById('material-modal-body');
+  const title = document.getElementById('material-modal-title');
+
+  title.textContent = `${itemCode} — ${unit} / ${store} / ${process}`;
+  body.innerHTML = '<div class="empty-state"><p>Loading...</p></div>';
+  backdrop.style.display = 'flex';
+
+  const params = new URLSearchParams({ month: "{{ selected_month }}", unit, store, process, item_code: itemCode });
+  fetch('/part_cost/detail?' + params.toString())
+    .then(res => res.json())
+    .then(data => {
+      if (data.error) {
+        body.innerHTML = `<div class="empty-state"><p>❌ ${data.error}</p></div>`;
+        return;
+      }
+      if (!data.materials.length) {
+        body.innerHTML = '<div class="empty-state"><p>No materials found for this part this month.</p></div>';
+        return;
+      }
+      let html = `
+        <table>
+          <thead>
+            <tr>
+              <th>Input item</th><th>Description</th><th>Item type</th><th>Bucket</th>
+              <th>Norm qty</th><th>Total consumed</th><th>Unit price</th><th>Cost contribution</th>
+            </tr>
+          </thead>
+          <tbody>`;
+      data.materials.forEach(m => {
+        const isPriced = m.cost_contribution !== null;
+        html += `<tr class="${isPriced ? '' : 'purchase-node'}">
+          <td>${m.input_item}</td>
+          <td>${m.description || ''}</td>
+          <td>${m.item_type || 'Unknown'}</td>
+          <td>${m.bucket || '—'}</td>
+          <td>${m.norm_qty ?? ''}</td>
+          <td>${m.total_consumed}</td>
+          <td>${m.unit_price !== null ? '₹' + m.unit_price : '—'}</td>
+          <td>${isPriced ? '₹' + m.cost_contribution : '—'}</td>
+        </tr>`;
+      });
+      html += '</tbody></table>';
+      body.innerHTML = html;
+    })
+    .catch(err => {
+      body.innerHTML = `<div class="empty-state"><p>❌ ${err}</p></div>`;
+    });
+}
+
+function closeMaterialDetail(event) {
+  if (event && event.target !== event.currentTarget) return;   // clicked inside the panel, not the backdrop
+  document.getElementById('material-modal-backdrop').style.display = 'none';
+}
+
+function uploadItemTypes() {
+  const fileInput = document.getElementById('item-type-file');
+  const statusEl = document.getElementById('item-type-upload-status');
+
+  if (!fileInput.files.length) {
+    statusEl.textContent = "❌ Please choose a file first";
+    statusEl.className = "save-status error";
+    return;
+  }
+
+  statusEl.textContent = "Uploading...";
+  statusEl.className = "save-status running";
+
+  const formData = new FormData();
+  formData.append("file", fileInput.files[0]);
+  formData.append("month", "{{ selected_month }}");
+
+  fetch('/month_posting/upload_missing_types', { method: 'POST', body: formData })
+    .then(res => res.json())
+    .then(data => {
+      if (data.error) {
+        statusEl.textContent = "❌ " + data.error;
+        statusEl.className = "save-status error";
+        return;
+      }
+      statusEl.textContent = `✅ Updated ${data.updated} item type(s). Skipped ${data.skipped_blank} blank.`;
+      statusEl.className = "save-status success";
+      setTimeout(() => window.location.reload(), 1500);
+    })
+    .catch(err => {
+      statusEl.textContent = "❌ " + err;
+      statusEl.className = "save-status error";
+    });
+}
+</script>
+
+{% endblock %}

@@ -1,0 +1,254 @@
+{% extends "base.html" %}
+
+{% macro render_node(node) %}
+<li>
+  <div class="tree-node {{ 'purchase-node' if node.is_purchase_sfg else '' }} {{ 'missing-node' if node.is_missing else '' }}">
+    {% if node.children %}
+    <span class="tree-toggle" onclick="toggleNode(this)">▾</span>
+    {% else %}
+    <span class="tree-leaf-marker">•</span>
+    {% endif %}
+    <span class="tree-code">{{ node.code }}</span>
+    <span class="tree-item">{{ node.item }}</span>
+    <span class="tree-badge">{{ node.item_type or 'Unknown' }}</span>
+    {% if node.process %}<span class="tree-meta">{{ node.process }} · {{ node.unit }}</span>{% endif %}
+    <span class="tree-qty">× {{ node.norm_qty }}</span>
+    <span class="tree-cost">₹{{ node.unit_cost|commafy }}</span>
+    <span class="tree-extended">= ₹{{ node.extended_cost|commafy }}</span>
+    <span class="tree-source">{{ node.cost_source }}</span>
+  </div>
+  {% if node.children %}
+  <ul class="tree-children">
+    {% for child in node.children %}
+    {{ render_node(child) }}
+    {% endfor %}
+  </ul>
+  {% endif %}
+</li>
+{% endmacro %}
+
+{% block content %}
+
+{% if not available_fgs %}
+<div class="callout error-callout">
+  <strong>No BOM trees stored for this month yet.</strong>
+  <div>Go to Data Sync and run <em>Sales Register</em>, <em>Item Master</em>, then <em>BOM Register</em> for this month.</div>
+</div>
+{% else %}
+
+<div class="toolbar">
+  <select id="fg-select" onchange="pickFg(this.value)">
+    <option value="">Select an FG code ({{ available_fgs|length }} available)...</option>
+    {% for fg in available_fgs %}
+    <option value="{{ fg }}" {{ 'selected' if fg == selected_fg else '' }}>{{ fg }}</option>
+    {% endfor %}
+  </select>
+  {% if root_info %}
+  <button id="view-tree-btn" class="scope-toggle active" onclick="setView('tree')">Tree view</button>
+  <button id="view-sheet-btn" class="scope-toggle" onclick="setView('sheet')">Sheet view</button>
+  {% endif %}
+  {% if selected_fg %}
+  <a class="download-btn" href="/tree/download_sheet?month={{ selected_month }}&fg={{ selected_fg }}">Download this FG's sheet</a>
+  <a class="download-btn" href="?month={{ selected_month }}">&larr; Back to all FGs</a>
+  {% else %}
+  <a class="download-btn" href="/tree/download_sheet?month={{ selected_month }}">Download all FGs' sheet (codes only)</a>
+  <a class="download-btn" href="/tree/download_all?month={{ selected_month }}">Download all FGs' costs (Excel)</a>
+  {% endif %}
+</div>
+
+{% if root_info %}
+<div class="tree-summary">
+  <div class="summary-item">
+    <div class="summary-label">Own stage cost</div>
+    <div class="summary-value">₹{{ root_info.own_cost|commafy }}</div>
+    <div class="summary-sub">{{ root_info.own_cost_source }}</div>
+  </div>
+  <div class="summary-item">
+    <div class="summary-label">Sub-items total</div>
+    <div class="summary-value">₹{{ root_info.descendants_total|commafy }}</div>
+  </div>
+  <div class="summary-item total-summary">
+    <div class="summary-label">Total cost/part</div>
+    <div class="summary-value">₹{{ root_info.total_cost|commafy }}</div>
+  </div>
+  <div class="summary-item {{ 'missing-summary' if root_info.missing_count else '' }}">
+    <div class="summary-label">Missing</div>
+    <div class="summary-value">{{ root_info.missing_count }}</div>
+    <div class="summary-sub">sub-items with no cost</div>
+  </div>
+</div>
+
+{% if missing_codes %}
+<div class="callout warning-callout">
+  <strong>No cost found for {{ missing_codes|length }} code(s):</strong>
+  <div class="missing-list">
+    {% for code in missing_codes %}<span class="missing-chip">{{ code }}</span>{% endfor %}
+  </div>
+</div>
+{% endif %}
+
+<div class="tree-wrap" id="tree-view-container">
+  <div class="tree-root">{{ selected_fg }}</div>
+  <ul class="tree-children">
+    {% for node in tree_nodes %}
+    {{ render_node(node) }}
+    {% endfor %}
+  </ul>
+</div>
+
+<div class="table-wrap" id="sheet-view-container" style="display:none;">
+  <table>
+    <thead>
+      <tr>
+        <th>FG Code</th>
+        {% for i in range(sheet_max_depth) %}
+        <th>NXT{{ i + 1 }}</th>
+        {% endfor %}
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in sheet_rows %}
+      <tr>
+        {% for cell in row %}
+        <td>{{ cell }}</td>
+        {% endfor %}
+        {% for i in range((sheet_max_depth + 1) - row|length) %}
+        <td></td>
+        {% endfor %}
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% if not sheet_rows %}
+  <div class="empty-state"><p>No production sub-items - {{ selected_fg }} either has none, or is made entirely from purchased materials.</p></div>
+  {% endif %}
+</div>
+
+<p class="tree-note">
+  Greyed-out rows are purchased sub-items — their price is already counted inside the parent's Part Cost Calc,
+  so they show ₹0 here to avoid double-counting. Purchased <em>finished goods</em> are the exception and carry their weighted price.
+</p>
+
+{% elif selected_fg %}
+<div class="empty-state"><p>No BOM found for {{ selected_fg }} in this month.</p></div>
+{% else %}
+
+{% set filter_fields = ["root_fg", "code", "item", "item_type", "process", "unit"] %}
+<form id="all-fg-filter-form" method="get">
+  <input type="hidden" name="month" value="{{ selected_month }}">
+  <div class="table-wrap">
+    <table id="all-fg-table">
+      <thead>
+        <tr>
+          <th>FG Code</th>
+          <th>Code</th>
+          <th>Item</th>
+          <th>Level</th>
+          <th>Type</th>
+          <th>Process</th>
+          <th>Unit</th>
+          <th>Norm Qty</th>
+          <th>Unit Cost</th>
+          <th>Extended Cost</th>
+          <th>Source</th>
+        </tr>
+        <tr class="filter-row">
+          {% for field in filter_fields %}
+          <th><input type="text" name="{{ field }}" value="{{ all_fg_filters.get(field, '') }}" onchange="submitAllFgFilters()"></th>
+          {% endfor %}
+          <th></th><th></th><th></th><th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in all_fg_rows %}
+        <tr class="{{ 'purchase-node' if row.unit_cost == 0 and row.level > 0 and row.item_type == 'Purchase' else '' }} {{ 'missing-node' if row.is_missing else '' }}">
+          <td>{{ row.root_fg }}</td>
+          <td style="padding-left: {{ row.level * 16 + 14 }}px;">{{ row.code }}</td>
+          <td>{{ row.item }}</td>
+          <td>{{ row.level }}</td>
+          <td>{{ row.item_type or 'Unknown' }}</td>
+          <td>{{ row.process }}</td>
+          <td>{{ row.unit }}</td>
+          <td>{{ row.norm_qty }}</td>
+          <td>₹{{ row.unit_cost|commafy }}</td>
+          <td>₹{{ row.extended_cost|commafy }}</td>
+          <td class="tree-source">{{ row.cost_source }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% if not all_fg_rows %}
+    <div class="empty-state"><p>No rows match{{ ' this filter' if all_fg_filters.values()|select|list else ' for this month' }}.</p></div>
+    {% endif %}
+  </div>
+</form>
+
+<div class="pagination">
+  <span>{{ all_fg_total_count }} row(s) total &middot; page {{ all_fg_page }} of {{ all_fg_total_pages }}</span>
+  <div class="pagination-buttons">
+    <button onclick="goToAllFgPage({{ all_fg_page - 1 }})" {{ 'disabled' if all_fg_page <= 1 else '' }}>Previous</button>
+    <button onclick="goToAllFgPage({{ all_fg_page + 1 }})" {{ 'disabled' if all_fg_page >= all_fg_total_pages else '' }}>Next</button>
+  </div>
+</div>
+
+<p class="tree-note">
+  Greyed-out rows are purchased sub-items — their price is already counted inside the parent's Part Cost Calc,
+  so they show ₹0 here to avoid double-counting. Purchased <em>finished goods</em> are the exception and carry their weighted price.
+  Pick an FG from the dropdown above to drill into its individual tree.
+</p>
+
+{% endif %}
+
+{% endif %}
+
+<script>
+function pickFg(fg) {
+  const url = new URL(window.location);
+  if (fg) { url.searchParams.set('fg', fg); } else { url.searchParams.delete('fg'); }
+  window.location = url;
+}
+
+function submitAllFgFilters() {
+  const form = document.getElementById('all-fg-filter-form');
+  let pageInput = form.querySelector('input[name="page"]');
+  if (pageInput) pageInput.remove();
+  form.submit();
+}
+
+function goToAllFgPage(page) {
+  const url = new URL(window.location);
+  url.searchParams.set('page', page);
+  window.location = url;
+}
+
+function setView(view) {
+  const treeContainer = document.getElementById('tree-view-container');
+  const sheetContainer = document.getElementById('sheet-view-container');
+  const treeBtn = document.getElementById('view-tree-btn');
+  const sheetBtn = document.getElementById('view-sheet-btn');
+  if (!treeContainer || !sheetContainer) return;
+
+  if (view === 'sheet') {
+    treeContainer.style.display = 'none';
+    sheetContainer.style.display = '';
+    treeBtn.classList.remove('active');
+    sheetBtn.classList.add('active');
+  } else {
+    treeContainer.style.display = '';
+    sheetContainer.style.display = 'none';
+    treeBtn.classList.add('active');
+    sheetBtn.classList.remove('active');
+  }
+}
+
+function toggleNode(el) {
+  const li = el.closest('li');
+  const children = li.querySelector('.tree-children');
+  if (!children) return;
+  const hidden = children.style.display === 'none';
+  children.style.display = hidden ? '' : 'none';
+  el.textContent = hidden ? '▾' : '▸';
+}
+</script>
+
+{% endblock %}

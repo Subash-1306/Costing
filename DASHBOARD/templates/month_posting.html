@@ -1,0 +1,149 @@
+{% extends "base.html" %}
+
+{% block content %}
+
+{% if not item_master_ready %}
+<div class="callout error-callout">
+  <strong>Item Master hasn't been run for {{ months|selectattr("key", "equalto", selected_month)|map(attribute="label")|first }} yet.</strong>
+  <div>Go to Data Sync and run Item Master for this month first, then come back here.</div>
+</div>
+
+{% else %}
+
+{% if missing_item_types %}
+<div class="callout warning-callout">
+  <strong>{{ missing_item_types|length }} item code(s) have no Item Type this month</strong> (not found in Item Master):
+  <div class="missing-list">
+    {% for code in missing_item_types %}<span class="missing-chip">{{ code }}</span>{% endfor %}
+  </div>
+  <div class="callout-actions">
+    <a class="download-btn" href="/month_posting/download_missing_types?month={{ selected_month }}">Download missing types</a>
+    <input type="file" id="item-type-file" accept=".xlsx">
+    <button onclick="uploadItemTypes()">Upload filled</button>
+  </div>
+  <div id="item-type-upload-status" class="save-status"></div>
+</div>
+{% endif %}
+
+{% set filter_fields = ["company", "unit", "store", "process", "item_code", "item_name", "uom", "", "", "input_item", "item_description", "item_type", "", ""] %}
+
+<form id="filter-form" method="get">
+  <input type="hidden" name="month" value="{{ selected_month }}">
+  <div class="table-wrap">
+    <table id="month-posting-table">
+      <thead>
+        <tr>
+          <th>Company</th>
+          <th>Unit</th>
+          <th>Store</th>
+          <th>Process</th>
+          <th>Item code</th>
+          <th>Item name</th>
+          <th>UOM</th>
+          <th>Total acc qty</th>
+          <th>Total prod qty</th>
+          <th>Input item</th>
+          <th>Description</th>
+          <th>Item type</th>
+          <th>Norm qty</th>
+          <th>Total consumed</th>
+        </tr>
+        <tr class="filter-row">
+          {% for field in filter_fields %}
+          <th>
+            {% if field %}
+            <input type="text" name="{{ field }}" value="{{ filters.get(field, '') }}" onchange="submitFilters()">
+            {% endif %}
+          </th>
+          {% endfor %}
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in rows %}
+        <tr>
+          <td>{{ row.company }}</td>
+          <td>{{ row.unit }}</td>
+          <td>{{ row.store }}</td>
+          <td>{{ row.process }}</td>
+          <td>{{ row.item_code }}</td>
+          <td>{{ row.item_name }}</td>
+          <td>{{ row.uom }}</td>
+          <td>{{ row.total_acc_qty }}</td>
+          <td>{{ row.total_prod_qty }}</td>
+          <td>{{ row.input_item }}</td>
+          <td>{{ row.item_description }}</td>
+          <td class="{{ 'missing-type' if not row.item_type else '' }}">{{ row.item_type or 'Unknown' }}</td>
+          <td>{{ row.norm_qty }}</td>
+          <td>{{ row.total_consumed }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% if not rows %}
+    <div class="empty-state"><p>No rows match{{ ' this filter' if filters.values()|select|list else ' for this month' }}.</p></div>
+    {% endif %}
+  </div>
+</form>
+
+<div class="pagination">
+  <span>{{ total_count }} row(s) total &middot; page {{ page }} of {{ total_pages }}</span>
+  <div class="pagination-buttons">
+    <button onclick="goToPage({{ page - 1 }})" {{ 'disabled' if page <= 1 else '' }}>Previous</button>
+    <button onclick="goToPage({{ page + 1 }})" {{ 'disabled' if page >= total_pages else '' }}>Next</button>
+  </div>
+</div>
+
+{% endif %}
+
+<script>
+function submitFilters() {
+  const form = document.getElementById('filter-form');
+  // reset to page 1 whenever a filter changes
+  let pageInput = form.querySelector('input[name="page"]');
+  if (pageInput) pageInput.remove();
+  form.submit();
+}
+
+function goToPage(page) {
+  const url = new URL(window.location);
+  url.searchParams.set('page', page);
+  window.location = url;
+}
+
+function uploadItemTypes() {
+  const fileInput = document.getElementById('item-type-file');
+  const statusEl = document.getElementById('item-type-upload-status');
+
+  if (!fileInput.files.length) {
+    statusEl.textContent = "❌ Please choose a file first";
+    statusEl.className = "save-status error";
+    return;
+  }
+
+  statusEl.textContent = "Uploading...";
+  statusEl.className = "save-status running";
+
+  const formData = new FormData();
+  formData.append("file", fileInput.files[0]);
+  formData.append("month", "{{ selected_month }}");
+
+  fetch('/month_posting/upload_missing_types', { method: 'POST', body: formData })
+    .then(res => res.json())
+    .then(data => {
+      if (data.error) {
+        statusEl.textContent = "❌ " + data.error;
+        statusEl.className = "save-status error";
+        return;
+      }
+      statusEl.textContent = `✅ Updated ${data.updated} item type(s). Skipped ${data.skipped_blank} blank.`;
+      statusEl.className = "save-status success";
+      setTimeout(() => window.location.reload(), 1500);
+    })
+    .catch(err => {
+      statusEl.textContent = "❌ " + err;
+      statusEl.className = "save-status error";
+    });
+}
+</script>
+
+{% endblock %}

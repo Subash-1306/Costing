@@ -1,0 +1,177 @@
+{% extends "base.html" %}
+
+{% block content %}
+
+<div class="callout">
+  <div>
+    <strong>{{ total_count }}</strong> combination(s) produced in
+    {{ months|selectattr("key", "equalto", selected_month)|map(attribute="label")|first }} &middot;
+    <strong class="{{ 'missing-type' if missing_count else '' }}">{{ missing_count }}</strong> still need a Cycle Time.
+  </div>
+  <div class="callout-actions">
+    <a class="download-btn" href="/cycle_time/download_missing?month={{ selected_month }}&scope=all">Download all</a>
+    <a class="download-btn" href="/cycle_time/download_missing?month={{ selected_month }}&scope=missing">Download missing ({{ missing_count }})</a>
+    <input type="file" id="cycle-time-file" accept=".xlsx">
+    <button onclick="uploadFilled()">Upload filled</button>
+  </div>
+  <div id="upload-status" class="save-status"></div>
+</div>
+
+<div class="toolbar">
+  <button onclick="saveEdits()">Save changes</button>
+  <a class="download-btn scope-toggle {{ 'active' if scope == 'all' else '' }}"
+     href="?month={{ selected_month }}&scope=all">Show all</a>
+  <a class="download-btn scope-toggle {{ 'active' if scope == 'missing' else '' }}"
+     href="?month={{ selected_month }}&scope=missing">Show missing only</a>
+  <span id="edit-status" class="save-status"></span>
+</div>
+
+<div class="table-wrap">
+  <table id="cycle-time-table">
+    <thead>
+      <tr>
+        <th>Unit</th>
+        <th>Store</th>
+        <th>Process</th>
+        <th>Item code</th>
+        <th>Item description</th>
+        <th>Total prod qty</th>
+        <th>Cycle time (sec)</th>
+      </tr>
+      <tr class="filter-row">
+        {% for i in range(7) %}
+        <th><input type="text" class="col-filter" oninput="filterTable()"></th>
+        {% endfor %}
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in rows %}
+      <tr data-unit="{{ row.unit }}" data-store="{{ row.store }}" data-process="{{ row.process }}" data-item-code="{{ row.item_code }}">
+        <td>{{ row.unit }}</td>
+        <td>{{ row.store }}</td>
+        <td>{{ row.process }}</td>
+        <td>{{ row.item_code }}</td>
+        <td>{{ row.item_name }}</td>
+        <td>{{ row.total_prod_qty }}</td>
+        <td>
+          {% if row.is_fixed %}
+          <input type="number" class="cost-input cycle-time-input locked-input" value="1" readonly title="Fixed at 1s for this process">
+          {% else %}
+          <input type="number" step="0.01" class="cost-input cycle-time-input {{ 'needs-value' if row.is_missing else '' }}"
+                 value="{{ row.cycle_time if row.cycle_time is not none else '' }}">
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% if not rows %}
+  <div class="empty-state"><p>Nothing to show{{ ' - no missing cycle times' if scope == 'missing' else ' for this month' }}.</p></div>
+  {% endif %}
+</div>
+
+<script>
+function filterTable() {
+  const filters = [...document.querySelectorAll('#cycle-time-table .col-filter')].map(input => input.value.trim().toLowerCase());
+  const rows = document.querySelectorAll('#cycle-time-table tbody tr');
+
+  rows.forEach(row => {
+    const cells = row.querySelectorAll('td');
+    let visible = true;
+    filters.forEach((filterValue, i) => {
+      if (filterValue && cells[i]) {
+        // For the cycle time column the value lives in an input, not text
+        const input = cells[i].querySelector('input');
+        const cellText = (input ? input.value : cells[i].textContent).trim().toLowerCase();
+        if (!cellText.includes(filterValue)) visible = false;
+      }
+    });
+    row.style.display = visible ? '' : 'none';
+  });
+}
+
+function saveEdits() {
+  const statusEl = document.getElementById('edit-status');
+  const updates = [];
+
+  document.querySelectorAll('#cycle-time-table tbody tr').forEach(row => {
+    const input = row.querySelector('.cycle-time-input');
+    if (input.readOnly) return;               // fixed processes are never sent
+    if (input.value.trim() === '') return;     // don't send still-blank ones
+
+    updates.push({
+      unit: row.dataset.unit,
+      store: row.dataset.store,
+      process: row.dataset.process,
+      item_code: row.dataset.itemCode,
+      cycle_time: input.value,
+    });
+  });
+
+  if (!updates.length) {
+    statusEl.textContent = "Nothing to save - enter at least one cycle time first";
+    statusEl.className = "save-status error";
+    return;
+  }
+
+  statusEl.textContent = "Saving...";
+  statusEl.className = "save-status running";
+
+  fetch('/cycle_time/update', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ updates: updates })
+  })
+    .then(res => res.json())
+    .then(data => {
+      if (data.error) {
+        statusEl.textContent = "❌ " + data.error;
+        statusEl.className = "save-status error";
+        return;
+      }
+      statusEl.textContent = `✅ Saved ${data.saved} value(s)`;
+      statusEl.className = "save-status success";
+      setTimeout(() => window.location.reload(), 1200);
+    })
+    .catch(err => {
+      statusEl.textContent = "❌ " + err;
+      statusEl.className = "save-status error";
+    });
+}
+
+function uploadFilled() {
+  const fileInput = document.getElementById('cycle-time-file');
+  const statusEl = document.getElementById('upload-status');
+
+  if (!fileInput.files.length) {
+    statusEl.textContent = "❌ Please choose a file first";
+    statusEl.className = "save-status error";
+    return;
+  }
+
+  statusEl.textContent = "Uploading...";
+  statusEl.className = "save-status running";
+
+  const formData = new FormData();
+  formData.append("file", fileInput.files[0]);
+
+  fetch('/cycle_time/upload', { method: 'POST', body: formData })
+    .then(res => res.json())
+    .then(data => {
+      if (data.error) {
+        statusEl.textContent = "❌ " + data.error;
+        statusEl.className = "save-status error";
+        return;
+      }
+      statusEl.textContent = `✅ Saved ${data.saved}. Skipped ${data.skipped_blank} blank, ${data.skipped_fixed} fixed-process.`;
+      statusEl.className = "save-status success";
+      setTimeout(() => window.location.reload(), 1500);
+    })
+    .catch(err => {
+      statusEl.textContent = "❌ " + err;
+      statusEl.className = "save-status error";
+    });
+}
+</script>
+
+{% endblock %}

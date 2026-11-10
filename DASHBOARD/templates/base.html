@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>{{ page_label }} - Unitech Dashboard</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+
+<div class="layout">
+  <nav class="sidebar">
+    <div class="sidebar-title">🏭 Unitech dashboard</div>
+    <div class="nav-list">
+      {% set icons = {
+        'overview': '🏠', 'tree': '🌳', 'part_cost': '🧮', 'part_margin': '📊',
+        'month_posting': '📅', 'weighted_price': '💲', 'cycle_time': '⏱️',
+        'other_cost': '💵', 'data_sync': '🔄'
+      } %}
+      {% for item in nav_items %}
+      <a href="/{{ '' if item.key == 'overview' else item.key }}"
+         class="nav-item {{ 'active' if item.key == active_page else '' }}">
+        <span class="nav-icon">{{ icons.get(item.key, '•') }}</span>
+        <span>{{ item.label }}</span>
+      </a>
+      {% endfor %}
+    </div>
+  </nav>
+
+  <main class="content">
+    <div class="content-header">
+      <h1>{{ page_label }}</h1>
+      {% if months %}
+      <select id="month-select" onchange="changeMonth(this.value)">
+        {% for m in months %}
+        <option value="{{ m.key }}" {{ 'selected' if m.key == selected_month else '' }}>{{ m.label }}</option>
+        {% endfor %}
+      </select>
+      {% endif %}
+    </div>
+
+    {% block content %}{% endblock %}
+  </main>
+</div>
+
+<script>
+function changeMonth(monthKey) {
+  const url = new URL(window.location);
+  url.searchParams.set('month', monthKey);
+  window.location = url;
+}
+</script>
+
+{% block scripts %}{% endblock %}
+
+</body>
+</html>

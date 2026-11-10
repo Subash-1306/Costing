@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+
+{% block content %}
+
+{% if not months %}
+<div class="empty-state">
+  <p>No data yet. Run <code>Weighted_Price_Master.py</code> from the SCRIPTS folder first.</p>
+</div>
+{% else %}
+
+<div class="toolbar">
+  <input type="text" id="search-box" placeholder="Search item code..." value="{{ search }}" onkeydown="if(event.key==='Enter') runSearch()">
+  <button onclick="runSearch()">Search</button>
+  <a class="download-btn" href="/weighted_price/download?month={{ selected_month }}&kind=purchase"
+     title="Every item for this month, not just the search results">Download purchase price (GRN) - Excel</a>
+  <a class="download-btn" href="/weighted_price/download?month={{ selected_month }}&kind=selling"
+     title="Every FG sold this month">Download selling price - Excel</a>
+</div>
+
+<div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>Item code</th>
+        <th>Qty purchased</th>
+        <th>Value purchased</th>
+        <th>Weighted price (this month)</th>
+        <th>Final price used</th>
+        <th>Price source month</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in rows %}
+      <tr>
+        <td>{{ row.item_code }}</td>
+        <td>{{ "%.2f"|format(row.qty_purchased) if row.qty_purchased is not none else "-" }}</td>
+        <td>{{ "%.2f"|format(row.value_purchased) if row.value_purchased is not none else "-" }}</td>
+        <td>{{ "%.2f"|format(row.weighted_price) if row.weighted_price is not none else "-" }}</td>
+        <td>{{ "%.2f"|format(row.final_price) if row.final_price is not none else "-" }}</td>
+        <td class="{{ 'stale' if row.is_stale else '' }}">
+          {{ row.price_source_month or "-" }}
+          {% if row.is_stale %}<span class="stale-badge">carried forward</span>{% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% if not rows %}
+  <div class="empty-state"><p>No items match this search for this month.</p></div>
+  {% endif %}
+</div>
+
+{% endif %}
+
+<script>
+function runSearch() {
+  const url = new URL(window.location);
+  url.searchParams.set('search', document.getElementById('search-box').value);
+  window.location = url;
+}
+</script>
+
+{% endblock %}

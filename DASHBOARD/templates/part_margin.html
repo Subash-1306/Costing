@@ -1,0 +1,212 @@
+{% extends "base.html" %}
+
+{% block content %}
+
+{% if not selling_price_ready %}
+<div class="callout error-callout">
+  <strong>Weighted Selling Price hasn't been run for {{ months|selectattr("key", "equalto", selected_month)|map(attribute="label")|first }} yet.</strong>
+  <div>Go to Data Sync and run <em>Weighted Selling Price</em> for this month first, then come back here.</div>
+</div>
+
+{% else %}
+
+{% macro sort_link(field, label) %}
+  {% set next_dir = 'desc' if (sort_by == field and sort_dir == 'asc') else 'asc' %}
+  <a class="sort-header" href="?month={{ selected_month }}&item_code={{ item_code_filter }}&customer={{ customer_filter }}&unit={{ unit_filter }}&include_missing={{ '1' if include_missing else '' }}&sort={{ field }}&dir={{ next_dir }}">
+    {{ label }}
+    {% if sort_by == field %}<span class="sort-arrow">{{ '▲' if sort_dir == 'asc' else '▼' }}</span>{% endif %}
+  </a>
+{% endmacro %}
+
+<form id="filter-form" method="get">
+  <input type="hidden" name="month" value="{{ selected_month }}">
+  <input type="hidden" name="sort" value="{{ sort_by }}">
+  <input type="hidden" name="dir" value="{{ sort_dir }}">
+  <div class="toolbar">
+    <input type="text" name="item_code" value="{{ item_code_filter }}" placeholder="Filter by FG code..." onchange="this.form.submit()">
+    <input type="text" name="customer" value="{{ customer_filter }}" placeholder="Filter by customer..." onchange="this.form.submit()">
+    <input type="text" name="unit" value="{{ unit_filter }}" placeholder="Filter by unit..." onchange="this.form.submit()">
+    <label class="checkbox-label">
+      <input type="checkbox" name="include_missing" value="1" {{ 'checked' if include_missing else '' }} onchange="this.form.submit()">
+      Include parts with incomplete cost data
+    </label>
+  </div>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>{{ sort_link('item_code', 'FG code') }}</th>
+          <th>{{ sort_link('customer', 'Customer') }}</th>
+          <th>{{ sort_link('unit', 'Unit') }}</th>
+          <th>{{ sort_link('qty_sold', 'Qty sold') }}</th>
+          <th>{{ sort_link('selling_price', 'Weighted selling price') }}</th>
+          <th>{{ sort_link('cost', 'Cost (BOM Tree)') }}</th>
+          <th>{{ sort_link('margin', 'Margin (full qty)') }}</th>
+          <th>{{ sort_link('margin_pct', 'Margin %') }}</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in rows %}
+        <tr class="part-margin-row {{ 'negative-margin' if row.margin is not none and row.margin < 0 else '' }}"
+            data-item-code="{{ row.item_code }}" data-customer="{{ row.customer }}" data-unit="{{ row.unit }}"
+            title="Double-click for full summary">
+          <td>{{ row.item_code }}</td>
+          <td>{{ row.customer }}</td>
+          <td>{{ row.unit }}</td>
+          <td>{{ row.qty_sold }}</td>
+          <td>{{ '₹' ~ (row.selling_price|commafy) if row.selling_price is not none else '—' }}</td>
+          <td class="{{ 'missing-type' if row.cost_missing else '' }}">
+            {{ '₹' ~ (row.cost|commafy) if row.cost is not none else '—' }}
+            {% if row.cost is not none and row.cost_missing %}<span class="missing-chip" style="margin-left:6px;">partial</span>{% endif %}
+            {% if row.cost is none %}<span class="missing-chip" style="margin-left:6px;">price N/A</span>{% endif %}
+          </td>
+          <td>{{ '₹' ~ (row.margin|commafy) if row.margin is not none else '—' }}</td>
+          <td>{{ (row.margin_pct ~ '%') if row.margin_pct is not none else '—' }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% if not rows %}
+    <div class="empty-state"><p>No rows found{{ ' matching this filter' if (item_code_filter or customer_filter or unit_filter) else ' for this month' }}.</p></div>
+    {% endif %}
+  </div>
+</form>
+
+<div class="pagination">
+  <span>{{ total_count }} row(s) total &middot; page {{ page }} of {{ total_pages }}</span>
+  <div class="pagination-buttons">
+    <button onclick="goToPage({{ page - 1 }})" {{ 'disabled' if page <= 1 else '' }}>Previous</button>
+    <button onclick="goToPage({{ page + 1 }})" {{ 'disabled' if page >= total_pages else '' }}>Next</button>
+  </div>
+</div>
+
+<p class="tree-note">
+  One row per FG actually sold that month. Customer and Unit show the FG's single most recent invoice that
+  month (the unit is the sales-side unit that invoiced the sale, from Sales Register) - an FG can be sold to
+  several customers from several units within one month, so these are a quick reference, not a full breakdown.
+  Weighted selling price is the average across <em>all</em> sales of this FG that month. Cost (BOM Tree) is a
+  per-FG-per-month figure from production. Margin is for the <em>full quantity sold</em>, not per unit. A
+  "partial" cost means at least one Production sub-item's cost couldn't be traced that month.
+</p>
+
+{% endif %}
+
+<div id="fg-modal-backdrop" class="modal-backdrop" onclick="closeFgSummary(event)" style="display:none;">
+  <div class="modal-panel">
+    <div class="modal-header">
+      <h3 id="fg-modal-title">Summary</h3>
+      <button class="modal-close" onclick="closeFgSummary()">✕</button>
+    </div>
+    <div id="fg-modal-body" class="modal-body">
+      <div class="empty-state"><p>Loading...</p></div>
+    </div>
+  </div>
+</div>
+
+<script>
+function showFgSummary(itemCode) {
+  const backdrop = document.getElementById('fg-modal-backdrop');
+  const body = document.getElementById('fg-modal-body');
+  const title = document.getElementById('fg-modal-title');
+
+  title.textContent = itemCode;
+  body.innerHTML = '<div class="empty-state"><p>Loading...</p></div>';
+  backdrop.style.display = 'flex';
+
+  const params = new URLSearchParams({ month: "{{ selected_month }}", item_code: itemCode });
+  // Never spin forever: if the server hasn't answered in 2 minutes, say so.
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 120000);
+  fetch('/part_margin/detail?' + params.toString(), { signal: controller.signal })
+    .then(res => { clearTimeout(timer); return res.json(); })
+    .then(data => {
+      if (data.error) {
+        body.innerHTML = `<div class="empty-state"><p>❌ ${data.error}</p></div>`;
+        return;
+      }
+
+      const fmtMoney = (v) => v === null ? '—' : '₹' + v.toLocaleString('en-IN', { maximumFractionDigits: 2 });
+      const fmtPct = (v) => v === null ? '—' : v + '%';
+
+      let html = `
+        <div class="fg-summary-kpis">
+          <div class="fg-kpi"><div class="fg-kpi-label">Weighted selling price</div><div class="fg-kpi-value">${fmtMoney(data.selling_price)}</div></div>
+          <div class="fg-kpi"><div class="fg-kpi-label">Qty sold</div><div class="fg-kpi-value">${data.qty_sold}</div></div>
+          <div class="fg-kpi"><div class="fg-kpi-label">Cost (BOM Tree)</div><div class="fg-kpi-value">${fmtMoney(data.cost)}</div></div>
+          <div class="fg-kpi fg-kpi-accent"><div class="fg-kpi-label">Margin (full qty)</div><div class="fg-kpi-value">${fmtMoney(data.margin)}</div></div>
+          <div class="fg-kpi"><div class="fg-kpi-label">Margin %</div><div class="fg-kpi-value">${fmtPct(data.margin_pct)}</div></div>
+          <div class="fg-kpi"><div class="fg-kpi-label">Last invoiced to / from</div><div class="fg-kpi-value fg-kpi-small">${data.customer} / ${data.unit}</div></div>
+        </div>
+        <div class="fg-summary-subheading">Cost source: ${data.cost_source}</div>`;
+
+      if (data.root_row || data.sub_items.length) {
+        html += `
+          <table class="fg-summary-table">
+            <thead>
+              <tr><th>Code</th><th>Item</th><th>Type</th><th>Process</th><th>Unit</th><th>Norm qty</th><th>Unit cost</th><th>Extended cost</th></tr>
+            </thead>
+            <tbody>`;
+        // The FG itself first - its own stage (e.g. ASSEMBLY) and that
+        // stage's cost - so the rows below it add up to the total cost.
+        if (data.root_row) {
+          const r = data.root_row;
+          html += `<tr class="fg-root-row ${r.is_missing ? 'missing-node' : ''}">
+            <td style="padding-left:14px;">${r.code}</td>
+            <td>${r.item || ''}</td>
+            <td>${r.item_type || '—'}</td>
+            <td>${r.process || '—'}</td>
+            <td>${r.unit || '—'}</td>
+            <td>${r.norm_qty}</td>
+            <td>${r.unit_cost !== null ? '₹' + r.unit_cost : '—'}</td>
+            <td>${r.extended_cost !== null ? '₹' + r.extended_cost : '—'}</td>
+          </tr>`;
+        }
+        data.sub_items.forEach(n => {
+          const rowClass = n.is_missing ? 'missing-node' : (n.is_purchase_sfg ? 'purchase-node' : '');
+          html += `<tr class="${rowClass}">
+            <td style="padding-left:${n.level * 16 + 14}px;">${n.code}</td>
+            <td>${n.item || ''}</td>
+            <td>${n.item_type || '—'}</td>
+            <td>${n.process || '—'}</td>
+            <td>${n.unit || '—'}</td>
+            <td>${n.norm_qty ?? ''}</td>
+            <td>${n.unit_cost !== null ? '₹' + n.unit_cost : '—'}</td>
+            <td>${n.extended_cost !== null ? '₹' + n.extended_cost : '—'}</td>
+          </tr>`;
+        });
+        html += '</tbody></table>';
+      } else {
+        html += '<div class="empty-state"><p>No sub-items — this FG has no BOM Tree entry for this month.</p></div>';
+      }
+
+      body.innerHTML = html;
+    })
+    .catch(err => {
+      clearTimeout(timer);
+      const msg = err.name === 'AbortError'
+        ? 'This took more than 2 minutes, so it was stopped. Check the dashboard\'s command window for an error message.'
+        : err;
+      body.innerHTML = `<div class="empty-state"><p>❌ ${msg}</p></div>`;
+    });
+}
+
+function closeFgSummary(event) {
+  if (event && event.target !== event.currentTarget) return;
+  document.getElementById('fg-modal-backdrop').style.display = 'none';
+}
+
+document.querySelector('.table-wrap tbody')?.addEventListener('dblclick', (e) => {
+  const row = e.target.closest('tr.part-margin-row');
+  if (!row) return;
+  showFgSummary(row.dataset.itemCode);
+});
+
+function goToPage(page) {
+  const url = new URL(window.location);
+  url.searchParams.set('page', page);
+  window.location = url;
+}
+</script>
+
+{% endblock %}

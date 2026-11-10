@@ -1,0 +1,111 @@
+{% extends "base.html" %}
+
+{% block content %}
+
+{% if not rows %}
+<div class="empty-state">
+  <p>No stores found. Go to Data Sync's Process Master card and fill in your Unit + Store + Process mappings first.</p>
+</div>
+{% else %}
+
+<div class="toolbar">
+  <button onclick="saveAll()">Save all</button>
+  <span id="save-status" class="save-status"></span>
+</div>
+
+<div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>Unit</th>
+        <th>Store</th>
+        {% for key, label in fields %}
+        <th>{{ label }}</th>
+        {% endfor %}
+      </tr>
+    </thead>
+    <tbody id="other-cost-body">
+      {% for row in rows %}
+      <tr data-unit="{{ row.unit }}" data-store="{{ row.store }}" data-is-trimming="{{ 'yes' if row.is_trimming else 'no' }}">
+        <td class="store-cell">{{ row.unit }}</td>
+        <td class="store-cell">{{ row.store }}</td>
+        {% for key, label in fields %}
+        <td>
+          <div class="currency-input {{ 'locked-input' if row.is_trimming else '' }}">
+            <span class="currency-symbol">₹</span>
+            {% if row.is_trimming %}
+            <input type="text" class="cost-input" data-field="{{ key }}"
+                   value="{{ row.costs[key]|commafy }}" readonly
+                   title="Auto-calculated: Trimming is a flat ₹1 per piece, so this equals total Prod Qty for the month">
+            {% else %}
+            <input type="text" inputmode="decimal" class="cost-input" data-field="{{ key }}"
+                   value="{{ row.costs[key]|commafy }}"
+                   onfocus="stripCommasOnFocus(this)" onblur="reformatOnBlur(this)">
+            {% endif %}
+          </div>
+        </td>
+        {% endfor %}
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+{% endif %}
+
+<script>
+function stripCommasOnFocus(input) {
+  input.value = input.value.replace(/,/g, '');
+}
+
+function reformatOnBlur(input) {
+  const raw = input.value.replace(/,/g, '').trim();
+  if (raw === '' || isNaN(raw)) {
+    input.value = raw;
+    return;
+  }
+  const num = parseFloat(raw);
+  input.value = Number.isInteger(num) ? num.toLocaleString('en-US') : num.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function saveAll() {
+  const statusEl = document.getElementById('save-status');
+  const month = "{{ selected_month }}";
+  const rows = [];
+
+  document.querySelectorAll('#other-cost-body tr').forEach(tr => {
+    if (tr.dataset.isTrimming === 'yes') return;   // auto-calculated, never saved
+
+    const values = { unit: tr.dataset.unit, store: tr.dataset.store };
+    tr.querySelectorAll('.cost-input').forEach(input => {
+      values[input.dataset.field] = input.value.replace(/,/g, '');   // strip commas before sending
+    });
+    rows.push(values);
+  });
+
+  statusEl.textContent = "Saving...";
+  statusEl.className = "save-status running";
+
+  fetch('/other_cost/save', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ month: month, rows: rows })
+  })
+    .then(res => res.json())
+    .then(data => {
+      if (data.error) {
+        statusEl.textContent = "❌ " + data.error;
+        statusEl.className = "save-status error";
+        return;
+      }
+      statusEl.textContent = `✅ Saved ${data.saved} row(s) for {{ selected_month }}`;
+      statusEl.className = "save-status success";
+    })
+    .catch(err => {
+      statusEl.textContent = "❌ " + err;
+      statusEl.className = "save-status error";
+    });
+}
+</script>
+
+{% endblock %}
