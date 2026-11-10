@@ -1,13 +1,13 @@
-"""
-Asks for the ERP (Vyapak) username and password - nothing is saved anywhere.
+r"""
+Gives every script its ERP (Vyapak) login. In order:
 
-Every script that logs in to the ERP gets its login from here:
-
-  * Run from the dashboard's "Run" button -> uses the login you typed when
-    you started the dashboard (kept in memory until you close the dashboard).
-    Nothing is written to any file.
-  * Run by hand (double-click or Command Prompt) -> it asks here, once per
-    run. The password is hidden while you type.
+  1. Started by the dashboard -> the login the dashboard hands over for
+     that one run (never written anywhere by this file).
+  2. A login saved on this PC with deploy\Set-ERP-Login.bat -> stored
+     encrypted in costing\config\erp_login.dat (Windows protection; the
+     file can't be read on any other PC). This is what the plant server uses.
+  3. Run by hand with nothing saved -> it asks, once per run. The password
+     is hidden while you type.
 
 The login is remembered only while the script is running, so a script that
 logs in to several companies asks you just once.
@@ -33,13 +33,23 @@ def get_credentials():
         _cached = (username, password)
         return _cached
 
-    # 2. Run by hand - ask now.
+    # 2. Saved on this PC with deploy\Set-ERP-Login.bat.
+    try:
+        from costing_config import load_erp_login
+        saved = load_erp_login()
+    except Exception:
+        saved = None
+    if saved:
+        _cached = saved
+        return _cached
+
+    # 3. Run by hand - ask now.
     if not (sys.stdin and sys.stdin.isatty()):
         print("❌ No ERP login given. Run this script from the dashboard's Run button, "
               "or open it in a Command Prompt so it can ask for your username and password.")
         sys.exit(1)
 
-    print("ERP login (nothing is saved)")
+    print("ERP login (not saved - run deploy\\Set-ERP-Login.bat to save it on this PC)")
     while True:
         username = input("  Username: ").strip()
         password = getpass.getpass("  Password (hidden while typing): ")

@@ -173,7 +173,8 @@ def main():
           + ("✅ same" if abs(complete - ov_unticked) < 1 else "❌ different - send me this output"))
 
     # ---- Excel ----
-    out_dir = os.path.join(SCRIPT_DIR, "..", "DOWNLOADS")
+    from costing_config import downloads_dir
+    out_dir = downloads_dir()
     os.makedirs(out_dir, exist_ok=True)
     tag = f"{M}_{units[0] if units else 'ALL'}" + (f"_{re.sub(r'[^A-Z0-9]+', '_', needle)}" if needle else "")
     path = os.path.abspath(os.path.join(out_dir, f"FG_Sales_{tag}.xlsx"))

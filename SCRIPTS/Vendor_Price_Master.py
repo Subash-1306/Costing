@@ -44,7 +44,8 @@ HEADERS = {
 }
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-DATABASE_DIR = os.path.join(SCRIPT_DIR, "..", "DATABASE")
+from costing_config import database_dir   # set in costing\config\settings.json
+DATABASE_DIR = database_dir()
 os.makedirs(DATABASE_DIR, exist_ok=True)
 DB_FILE = os.path.join(DATABASE_DIR, "Vendor_Price_Master.db")
 TABLE = "vendor_price_snapshot"

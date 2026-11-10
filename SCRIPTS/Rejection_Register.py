@@ -40,7 +40,8 @@ import Sales_Register as sr   # reuse the same login and unit list as the other 
 REPORT_URL = ""
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-DOWNLOAD_DIR = os.path.join(SCRIPT_DIR, "..", "DOWNLOADS")
+from costing_config import downloads_dir
+DOWNLOAD_DIR = downloads_dir()
 XLS_ROW_LIMIT = 65536   # the ERP's old .xls format can't hold more rows than this
 
 

@@ -36,7 +36,8 @@ HEADERS = {
 
 import os
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-DATABASE_DIR = os.path.join(SCRIPT_DIR, "..", "DATABASE")
+from costing_config import database_dir   # set in costing\config\settings.json
+DATABASE_DIR = database_dir()
 os.makedirs(DATABASE_DIR, exist_ok=True)
 DB_FILE = os.path.join(DATABASE_DIR, "Production_Entry.db")
 BASELINE_YEAR_MONTH = (2026, 6)   # matches the overall data baseline (1 Jun 2026)

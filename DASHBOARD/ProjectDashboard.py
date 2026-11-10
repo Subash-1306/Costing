@@ -1,22 +1,14 @@
-"""
-Local dashboard to run your ERP sync scripts with a button click instead of
-the command line, and download the resulting database afterwards.
+r"""
+Unitech costing dashboard (Flask).
 
-SETUP (one time):
-    pip install flask
+On the plant server it is started by Windows at boot (deploy\Setup.bat sets
+that up) and runs the ERP syncs on a timer (scheduler.py). On a laptop you
+can still start it by hand:
 
-HOW TO RUN:
-    1. Save this file as app.py in the SAME folder as all your scripts
-       (Process_Master.py, Production_Entry.py, Sales_Register.py, etc.)
-       and their .db files - e.g. D:\\Unitech Dashboard Database\\
-    2. Open a terminal in that folder and run:
-           python app.py
-    3. Open your browser to:
-           http://localhost:5000
+    python ProjectDashboard.py        then open http://localhost:5000
 
-Click a card's "Run" button to execute that script. Output/log shows on the
-page as it happens. Once it finishes, a "Download DB" button appears so you
-can grab the latest database file.
+Settings for this PC (data folder, port, password) are in
+costing\config\settings.json - see SCRIPTS\costing_config.py.
 """
 
 import subprocess
@@ -32,11 +24,16 @@ import openpyxl.utils
 import calendar
 import hashlib
 import time
+import json
+import secrets
+import shutil
+import traceback
 from datetime import datetime, timedelta
 
 import openpyxl
 
-from flask import Flask, render_template, jsonify, request, send_file, Response
+from flask import Flask, render_template, jsonify, request, send_file, Response, session, redirect
+from werkzeug.security import check_password_hash
 
 app = Flask(__name__)
 
@@ -58,14 +55,73 @@ def format_number_with_commas(value):
 
 app.jinja_env.filters["commafy"] = format_number_with_commas
 
-# This file (ProjectDashboard.py) lives in the DASHBOARD folder.
-# Scripts live in a sibling SCRIPTS folder, databases in a sibling DATABASE folder:
-#   D:\Unitech Dashboard Database\SCRIPTS\
-#   D:\Unitech Dashboard Database\DATABASE\
-#   D:\Unitech Dashboard Database\DASHBOARD\ProjectDashboard.py   <- this file
+# This file (ProjectDashboard.py) lives in the DASHBOARD folder, the scripts
+# in the sibling SCRIPTS folder. The databases are wherever settings.json says
+# (default: the sibling DATABASE folder).
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-SCRIPTS_DIR = os.path.join(BASE_DIR, "..", "SCRIPTS")
-DATABASE_DIR = os.path.join(BASE_DIR, "..", "DATABASE")
+SCRIPTS_DIR = os.path.abspath(os.path.join(BASE_DIR, "..", "SCRIPTS"))
+sys.path.insert(0, SCRIPTS_DIR)
+import costing_config            # noqa: E402  (lives in SCRIPTS)
+import scheduler                 # noqa: E402  (lives next to this file)
+
+DATABASE_DIR = costing_config.database_dir()
+SETTINGS = costing_config.load_settings()
+if not SETTINGS.get("secret_key"):
+    SETTINGS["secret_key"] = secrets.token_hex(32)
+    try:
+        costing_config.save_settings({"secret_key": SETTINGS["secret_key"]})
+    except OSError:
+        pass
+app.secret_key = SETTINGS["secret_key"]
+app.permanent_session_lifetime = timedelta(days=30)
+
+# ---- Sign-in: one password (deploy\Set-Password.bat). Until it is set,
+# the dashboard opens only on the PC it runs on. ----
+LOCAL_ADDRESSES = {"127.0.0.1", "::1"}
+OPEN_PATHS = ("/login", "/health", "/static/")
+
+
+@app.before_request
+def require_sign_in():
+    if request.path.startswith(OPEN_PATHS) or session.get("signed_in"):
+        return None
+    if not costing_config.load_settings().get("password_hash"):
+        if request.remote_addr in LOCAL_ADDRESSES:
+            return None
+        return Response("No dashboard password is set yet. On the server, run deploy\\Set-Password.bat, "
+                        "then open this page again.", status=403, mimetype="text/plain")
+    if request.method == "GET" and "text/html" in request.headers.get("Accept", ""):
+        return redirect("/login?next=" + request.full_path.rstrip("?"))
+    return jsonify({"error": "Signed out - reload the page and sign in again"}), 401
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login_page():
+    error = ""
+    next_url = request.values.get("next") or "/"
+    if not next_url.startswith("/") or next_url.startswith("//"):
+        next_url = "/"
+    if request.method == "POST":
+        pw_hash = costing_config.load_settings().get("password_hash")
+        if pw_hash and check_password_hash(pw_hash, request.form.get("password", "")):
+            session.clear()
+            session.permanent = True
+            session["signed_in"] = True
+            return redirect(next_url)
+        time.sleep(1)          # slows down guessing
+        error = "Wrong password"
+    return render_template("login.html", error=error, next_url=next_url)
+
+
+@app.route("/logout")
+def logout_page():
+    session.clear()
+    return redirect("/login")
+
+
+@app.route("/health")
+def health():
+    return jsonify({"ok": True})
 ANALYTICS_DB = os.path.join(DATABASE_DIR, "Analytics.db")
 
 # Sidebar navigation for the analytics pages, in display order.
@@ -234,10 +290,25 @@ def check_erp_login(username, password):
         return None
 
 
+def load_saved_erp_login():
+    """The login saved on this PC with deploy\\Set-ERP-Login.bat, if any."""
+    saved = costing_config.load_erp_login()
+    if saved:
+        ERP_LOGIN.update(username=saved[0], password=saved[1])
+        print("ERP login: using the one saved on this PC")
+        return True
+    return False
+
+
+def erp_env():
+    return {"ERP_USERNAME": ERP_LOGIN["username"], "ERP_PASSWORD": ERP_LOGIN["password"]} if ERP_LOGIN else None
+
+
 def ask_erp_login_at_startup():
     import getpass
     if not (sys.stdin and sys.stdin.isatty()):
-        print("⚠️  No window to type the ERP login into - the Data Sync page will ask for it instead.")
+        print("⚠️  No ERP login saved and no window to type it into - run deploy\\Set-ERP-Login.bat. "
+              "Until then the Data Sync page asks for it, and timed syncs are skipped.")
         return
 
     print()
@@ -268,12 +339,79 @@ def ask_erp_login_at_startup():
 ACTIVE_JOB_BY_KEY = {}
 
 
+# ---- Sync history (DATABASE\Sync_Log.db): every run, manual or automatic ----
+SYNC_LOG_DB = os.path.join(DATABASE_DIR, "Sync_Log.db")
+
+
+def sync_log_connection():
+    conn = sqlite3.connect(SYNC_LOG_DB, timeout=60)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS sync_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            script_key TEXT, args TEXT, trigger TEXT,
+            started_at TEXT, finished_at TEXT, returncode INTEGER, last_lines TEXT
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_sync_runs_key ON sync_runs (script_key, id)")
+    return conn
+
+
+def record_run_start(key, args, trigger):
+    try:
+        conn = sync_log_connection()
+        cur = conn.execute("INSERT INTO sync_runs (script_key, args, trigger, started_at) VALUES (?, ?, ?, ?)",
+                           (key, " ".join(args), trigger, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+        conn.commit()
+        run_id = cur.lastrowid
+        conn.close()
+        return run_id
+    except Exception:
+        return None
+
+
+def record_run_end(run_id, returncode, log_lines):
+    if run_id is None:
+        return
+    try:
+        conn = sync_log_connection()
+        conn.execute("UPDATE sync_runs SET finished_at = ?, returncode = ?, last_lines = ? WHERE id = ?",
+                     (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), returncode, "\n".join(log_lines[-15:]), run_id))
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
+
+
+def get_last_runs():
+    """{script_key: {"when", "trigger", "code"}} - the latest run of each script."""
+    result = {}
+    if not os.path.exists(SYNC_LOG_DB):
+        return result
+    try:
+        conn = sync_log_connection()
+        rows = conn.execute("""
+            SELECT script_key, started_at, trigger, returncode, finished_at
+            FROM sync_runs WHERE id IN (SELECT MAX(id) FROM sync_runs GROUP BY script_key)
+        """).fetchall()
+        conn.close()
+    except Exception:
+        return result
+    for key, started, trigger, code, finished in rows:
+        try:
+            when = datetime.strptime(started, "%Y-%m-%d %H:%M:%S").strftime("%d %b %H:%M")
+        except (TypeError, ValueError):
+            when = started
+        result[key] = {"when": when, "trigger": trigger, "code": code, "finished": finished is not None}
+    return result
+
+
 def run_script_in_background(job_id, script_path, args, extra_env=None):
     """Runs the script as a subprocess. Every output line is stored in the
     job's permanent history AND pushed to every currently-listening browser
     tab, so a tab that reconnects later (e.g. after navigating away and
     back) can catch up on everything it missed."""
     job = JOBS[job_id]
+    run_id = record_run_start(job["script_key"], args, job.get("trigger", "manual"))
 
     def emit(line):
         with job["lock"]:
@@ -288,11 +426,13 @@ def run_script_in_background(job_id, script_path, args, extra_env=None):
             invalidate_cost_cache()   # any script could have changed a part's cost
             for listener_q in job["listeners"]:
                 listener_q.put("__DONE__")
+        record_run_end(run_id, returncode, job["log_lines"])
 
     try:
         env = os.environ.copy()
         env["PYTHONIOENCODING"] = "utf-8"   # avoids crashes on emoji (✅ ❌) in piped output on Windows
         env["PYTHONUTF8"] = "1"
+        env["COSTING_DATABASE_DIR"] = DATABASE_DIR     # the scripts save where the dashboard reads
         if extra_env:
             env.update(extra_env)            # ERP login for this one run - only in memory,
                                              # handed straight to the script, never saved
@@ -322,9 +462,20 @@ def run_script_in_background(job_id, script_path, args, extra_env=None):
         finish(1)
 
 
-def start_job(script_key, script_path, args, extra_env=None):
+def prune_finished_jobs():
+    """Forget finished runs nobody is watching (the auto-sync starts about a
+    hundred a day). The latest run of each script is kept for its card."""
+    keep = set(ACTIVE_JOB_BY_KEY.values())
+    for jid in list(JOBS):
+        job = JOBS.get(jid)
+        if job and job["finished"] and jid not in keep and not job["listeners"]:
+            JOBS.pop(jid, None)
+
+
+def start_job(script_key, script_path, args, extra_env=None, trigger="manual"):
     """Kicks off a background job and returns its job_id. extra_env (the
     ERP login) goes only to the script's process - it is not kept in JOBS."""
+    prune_finished_jobs()
     job_id = str(uuid.uuid4())
     JOBS[job_id] = {
         "log_lines": [],
@@ -332,6 +483,7 @@ def start_job(script_key, script_path, args, extra_env=None):
         "finished": False,
         "returncode": None,
         "script_key": script_key,
+        "trigger": trigger,
         "lock": threading.Lock(),
     }
     ACTIVE_JOB_BY_KEY[script_key] = job_id
@@ -3591,7 +3743,11 @@ def data_sync():
     return render_template("data_sync.html", nav_items=NAV_ITEMS, active_page="data_sync",
                             page_label="Data sync", scripts=SCRIPTS, months=[],
                             range_download_keys=set(DOWNLOAD_RANGE_CONFIG.keys()),
-                            erp_login_ready=bool(ERP_LOGIN))
+                            erp_login_ready=bool(ERP_LOGIN),
+                            last_runs=get_last_runs(),
+                            schedule_text={k: scheduler.describe(k) for k in SCRIPTS},
+                            auto_sync_on=AUTO_SYNC is not None,
+                            erp_login_saved=os.path.exists(costing_config.ERP_LOGIN_FILE))
 
 
 @app.route("/start/<key>", methods=["POST"])
@@ -3631,7 +3787,7 @@ def start(key):
             return jsonify({"error": "Year and month are required for this script"}), 400
         args = [year, month]
 
-    job_id = start_job(key, script_path, args, extra_env)
+    job_id = start_job(key, script_path, args, extra_env, trigger="manual")
     return jsonify({"job_id": job_id})
 
 
@@ -3728,10 +3884,110 @@ def download(key):
     return send_file(db_path, as_attachment=True)
 
 
+# ---- Auto-sync (scheduler.py), backups and start-up ----
+AUTO_SYNC = None
+
+
+def run_job_blocking(key, args, trigger):
+    """Runs one script to the end (used by the auto-sync) and returns its exit code."""
+    if key == "backup":
+        return backup_databases()
+    info = SCRIPTS[key]
+    # never run alongside a manual run of the same script
+    while True:
+        active = ACTIVE_JOB_BY_KEY.get(key)
+        if not active or JOBS.get(active, {}).get("finished", True):
+            break
+        time.sleep(5)
+    extra_env = erp_env() if info.get("needs_login") else None
+    job_id = start_job(key, os.path.join(SCRIPTS_DIR, info["script"]), args, extra_env, trigger=trigger)
+    while not JOBS[job_id]["finished"]:
+        time.sleep(2)
+    return JOBS[job_id]["returncode"]
+
+
+def can_auto_run(key):
+    if key == "backup":
+        return True, ""
+    if key not in SCRIPTS:
+        return False, "not a known script"
+    if SCRIPTS[key].get("needs_login") and not ERP_LOGIN:
+        return False, "no ERP login saved on this PC (run deploy\\Set-ERP-Login.bat)"
+    return True, ""
+
+
+def database_files():
+    return sorted(f for f in os.listdir(DATABASE_DIR)
+                  if f.lower().endswith(".db") and "_backup_" not in f.lower())
+
+
+def backup_databases():
+    """Copies every database into backups\\YYYY-MM-DD\\ with SQLite's own
+    backup (safe while scripts are writing) and keeps the newest N days."""
+    keep_days = int(costing_config.load_settings().get("backup_keep_days") or 7)
+    root = costing_config.backup_dir()
+    target = os.path.join(root, datetime.now().strftime("%Y-%m-%d"))
+    os.makedirs(target, exist_ok=True)
+    failed = 0
+    for name in database_files():
+        try:
+            src = sqlite3.connect(os.path.join(DATABASE_DIR, name), timeout=60)
+            dst = sqlite3.connect(os.path.join(target, name))
+            with dst:
+                src.backup(dst)
+            src.close()
+            dst.close()
+        except Exception as e:
+            failed += 1
+            print(f"❌ Backup of {name} failed: {e}")
+    days = sorted(d for d in os.listdir(root) if len(d) == 10 and d[4] == "-" and d[7] == "-")
+    for old in days[:-keep_days]:
+        shutil.rmtree(os.path.join(root, old), ignore_errors=True)
+    print(f"Backup to {target}: {len(database_files()) - failed} database(s) copied, {failed} failed")
+    return 1 if failed else 0
+
+
+def enable_wal():
+    """Lets the dashboard read while a sync is writing (fewer 'database is
+    locked' errors). Stays switched on in the file once set."""
+    for name in database_files():
+        try:
+            conn = sqlite3.connect(os.path.join(DATABASE_DIR, name), timeout=10)
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.close()
+        except Exception as e:
+            print(f"⚠️  Couldn't switch {name} to WAL mode ({e}) - it still works, just with more locking.")
+
+
+def start_auto_sync():
+    global AUTO_SYNC
+    if not costing_config.load_settings().get("auto_sync", True):
+        print("Auto-sync is off (auto_sync: false in config\\settings.json)")
+        return
+    AUTO_SYNC = scheduler.Scheduler(run_job_blocking, can_auto_run, log=lambda m: print(f"[auto] {m}", flush=True))
+    AUTO_SYNC.start()
+
+
+def serve():
+    settings = costing_config.load_settings()
+    host, port = settings.get("host", "0.0.0.0"), int(settings.get("port", 5000))
+    print(f"Dashboard running - open http://localhost:{port} on this PC"
+          + (f", or http://<this PC's address>:{port} from another PC" if host == "0.0.0.0" else ""), flush=True)
+    try:
+        from waitress import serve as waitress_serve
+    except ImportError:
+        app.run(debug=False, host=host, port=port, threaded=True)
+        return
+    # send_bytes=1: send each line of a live script log straight away
+    waitress_serve(app, host=host, port=port, threads=16, send_bytes=1, channel_timeout=300, ident="Unitech costing")
+
+
 if __name__ == "__main__":
     print(f"Scripts folder: {SCRIPTS_DIR}")
     print(f"Database folder: {DATABASE_DIR}")
+    enable_wal()
     ensure_weighted_price_indexes()
-    ask_erp_login_at_startup()
-    print("Dashboard running - open http://localhost:5000 in your browser")
-    app.run(debug=False, port=5000)
+    if not load_saved_erp_login():
+        ask_erp_login_at_startup()
+    start_auto_sync()
+    serve()

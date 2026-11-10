@@ -2,12 +2,24 @@
 
 {% block content %}
 
+<div class="sync-status-bar">
+  <span>Auto-sync: <strong>{{ 'on' if auto_sync_on else 'off' }}</strong></span>
+  <span>ERP login: <strong>{{ 'saved on this PC' if erp_login_saved and erp_login_ready else ('typed at start-up' if erp_login_ready else 'missing - run deploy\\Set-ERP-Login.bat') }}</strong></span>
+  <a href="/logout">Sign out</a>
+</div>
+
 <div class="grid">
   {% for key, info in scripts.items() %}
   <div class="card" id="card-{{ key }}" data-needs-login="{{ '1' if (info.needs_login and not erp_login_ready) else '' }}">
     <div class="card-header">
       <h2>{{ info.label }}</h2>
       <p class="desc">{{ info.description }}</p>
+      {% if schedule_text.get(key) %}<p class="auto-line">{{ schedule_text[key] }}</p>{% endif %}
+      {% set lr = last_runs.get(key) %}
+      {% if lr %}
+      <p class="auto-line">Last run: {{ lr.when }} · {{ lr.trigger }} ·
+        {% if not lr.finished %}⏳ running{% elif lr.code == 0 %}✅ OK{% else %}❌ failed{% endif %}</p>
+      {% endif %}
     </div>
 
     {% if info.needs_month %}

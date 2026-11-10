@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign in - Unitech Dashboard</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body class="login-page">
+  <form class="login-card" method="post" action="/login">
+    <div class="login-title">🏭 Unitech dashboard</div>
+    <input type="hidden" name="next" value="{{ next_url }}">
+    <label>Password
+      <input type="password" name="password" autofocus autocomplete="current-password" required>
+    </label>
+    {% if error %}<div class="login-error">{{ error }}</div>{% endif %}
+    <button type="submit" class="run-btn">Sign in</button>
+  </form>
+</body>
+</html>
