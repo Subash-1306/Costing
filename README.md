@@ -18,7 +18,7 @@ On the plant server it runs by itself: Windows starts it at boot, it pulls the E
 ## Set up the server (Windows)
 
 1. Install **Python 3.10 or newer (64-bit)** from python.org (tick "Add to PATH").
-2. Download this repository from GitHub (green **Code** button, then **Download ZIP**, branch `costing-dashboard`), unzip it and copy the `costing` folder to a local disk, for example `C:\Plant Apps\costing`.
+2. Download this repository from GitHub (green **Code** button, then **Download ZIP**), unzip it to a local disk and rename the folder to `costing`, for example `C:\Plant Apps\costing`.
 3. Copy the `.db` files from the laptop's `DATABASE` folder to `C:\Plant Apps\costing\DATABASE`, or to any folder you will type in step 4.
 4. Double-click `deploy\Setup.bat` and approve the administrator prompt. It:
    - installs the libraries into a private Python environment (`venv`)

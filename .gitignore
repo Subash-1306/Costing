@@ -1,0 +1,14 @@
+# data, downloads and this PC's settings/login stay off GitHub
+DATABASE/
+DOWNLOADS/
+config/
+logs/
+backups/
+venv/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+.env
+__pycache__/
+*.pyc
