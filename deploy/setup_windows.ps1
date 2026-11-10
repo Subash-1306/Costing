@@ -39,7 +39,7 @@ try {
         $default = Join-Path $root 'DATABASE'
         Write-Host ''
         Write-Host 'Where are the database (.db) files?' -ForegroundColor Yellow
-        Write-Host "Press Enter for $default (copy the .db files from the laptop's DATABASE folder there),"
+        Write-Host "Press Enter for $default (then bring the .db files over with Copy-Databases.bat),"
         Write-Host 'or type another folder, for example D:\Unitech Dashboard Database\DATABASE'
         $db = (Read-Host 'Database folder').Trim().Trim('"')
         if (-not $db) { $db = $default }

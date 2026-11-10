@@ -19,7 +19,7 @@ On the plant server it runs by itself: Windows starts it at boot, it pulls the E
 
 1. Install **Python 3.10 or newer (64-bit)** from python.org (tick "Add to PATH").
 2. Download this repository from GitHub (green **Code** button, then **Download ZIP**), unzip it to a local disk and rename the folder to `costing`, for example `C:\Plant Apps\costing`.
-3. Copy the `.db` files from the laptop's `DATABASE` folder to `C:\Plant Apps\costing\DATABASE`, or to any folder you will type in step 4.
+3. Run Setup first (step 4), then bring the databases over with **`deploy\Copy-Databases.bat`** (see *Copying the databases* below).
 4. Double-click `deploy\Setup.bat` and approve the administrator prompt. It:
    - installs the libraries into a private Python environment (`venv`)
    - asks where the database files are
@@ -67,6 +67,15 @@ Only one script runs at a time. A script you start by hand with **Run** still wo
 ```
 
 A blank folder means the default inside `costing`. `host` `127.0.0.1` keeps the dashboard to this PC only. After any change, run `Restart.bat`.
+
+## Copying the databases
+
+Never copy `.db` files with Windows Explorer while a dashboard or a sync might be using them. The databases run in WAL mode, so the newest changes sit in a separate `-wal` file, and a plain copy can come out damaged (`database disk image is malformed`).
+
+Use **`deploy\Copy-Databases.bat`** instead:
+1. Close every dashboard that uses the target folder (on the server: stop the "Unitech Costing" task, or run it before Setup's last step).
+2. Run `Copy-Databases.bat` and type the folder to copy **from**, for example a USB drive or `\\laptop\D$\Unitech Dashboard Database\DATABASE`.
+3. It checks each source file, copies it with SQLite's own backup, checks the copy, and only then replaces the file in this install's database folder.
 
 ## Testing on a laptop
 
