@@ -38,6 +38,16 @@ Use a **read-only account that can only download reports**. To change the login 
 
 Run **`deploy\Set-Password.bat`** to set or change it. Only a hash is stored, in `config\settings.json`. Until a password is set, the dashboard opens only on the server itself.
 
+## Updates from GitHub
+
+Same as the MES server. Needs **Git for Windows** (git-scm.com, default options), which the MES server already has.
+
+1. Once: double-click **`deploy\Install-AutoUpdate.bat`** (approve the administrator prompt). It makes a download-only key for this PC and shows it; add it once at **github.com/Subash-1306/Costing → Settings → Deploy keys → Add deploy key** with "Allow write access" **off**. GitHub allows a key on one repository only, so this is a separate key from the MES one. It then links this folder to GitHub (a folder unzipped from GitHub works too) and adds the task **"Unitech Costing Update"**.
+2. After that the server checks GitHub **every night at 3 AM**. If there is something new, it downloads it, installs any new libraries and restarts the dashboard. If the new version doesn't start within 2 minutes, it goes back to the one that was running.
+3. To update straight away, double-click **`deploy\Update-Now.bat`**.
+
+`config`, the databases, backups and logs are never touched by an update. Each update is written to `logs\update.log`.
+
 ## Automatic syncs
 
 The Data Sync page shows each script's schedule and its last run (manual or automatic). The times are in `DASHBOARD\scheduler.py`:
