@@ -372,14 +372,14 @@ if __name__ == "__main__":
 
     sold_fgs = get_sold_fg_codes(month)
     if not sold_fgs:
-        print(f"No FG codes sold in {month} - run Sales_Register.py for this month first.")
-        sys.exit()
+        print(f"❌ No FG codes sold in {month} - run Sales Register first. Nothing saved.")
+        sys.exit(1)
     print(f"{len(sold_fgs)} distinct FG code(s) sold in {month}\n")
 
     item_types = get_item_types(month)
     if not item_types:
-        print(f"Item Master has no data for {month} - run Item_Master.py first.")
-        sys.exit()
+        print(f"❌ Item Master has no column for {month} yet - run Item Master first, then this again. Nothing saved.")
+        sys.exit(1)
     print(f"{len(item_types)} item type(s) loaded from Item Master\n")
 
     # --- Download the register from every unit and merge ---
@@ -403,8 +403,8 @@ if __name__ == "__main__":
             time.sleep(0.5)
 
     if not all_frames:
-        print("\nNo BOM data downloaded - nothing to do.")
-        sys.exit()
+        print("\n❌ No BOM data downloaded from the ERP - nothing saved.")
+        sys.exit(1)
 
     combined = pd.concat(all_frames, ignore_index=True)
     print(f"\nTotal BOM rows across all units: {len(combined)}")

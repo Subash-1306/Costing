@@ -112,7 +112,7 @@ def get_connection(db_path, create_sql):
 if __name__ == "__main__":
     if not os.path.exists(GRN_DB):
         print(f"❌ {GRN_DB} not found - run GRN_Register.py first.")
-        exit()
+        raise SystemExit(1)
 
     conn_grn = sqlite3.connect(GRN_DB)
     purchases = get_monthly_purchases(conn_grn)

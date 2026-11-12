@@ -110,7 +110,7 @@ def get_monthly_sales(conn_sales, table="sales_register", data=None):
 if __name__ == "__main__":
     if not os.path.exists(SALES_DB) and not os.path.exists(OTHER_SALES_DB):
         print(f"❌ No sales found - run Sales_Register.py (or upload Other Sales) first.")
-        exit()
+        raise SystemExit(1)
 
     # ERP sales and hand-uploaded Other Sales go into the SAME totals, so an
     # FG sold both ways gets one weighted price across all of its sales

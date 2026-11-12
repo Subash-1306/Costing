@@ -177,7 +177,7 @@ def upsert_rows(conn, df, month_columns_to_fill):
 if __name__ == "__main__":
     session = login()
     if not session:
-        exit()
+        raise SystemExit(1)
 
     print("Downloading item master...")
     file_bytes = download_item_master(session)
