@@ -130,17 +130,57 @@ def download_bom_register(session, showroom, max_retries=3):
     return None
 
 
+# The BOM Register's columns, in the ERP's order (used only when a file arrives without its header row)
+BOM_COLUMNS = ["COMPANY", "UNIT", "Effective Date", "OUTPUT CODE", "OUTPUT ITEM", "OUT UOM", "STD.QTY", "PROCESS",
+               "TYPE", "INPUT CODE", "INPUT ITEM", "IN UOM", "NORM QTY", "WIP STORE", "TO STORE", "REFERENCE",
+               "WORK LOCATION", "NOTES", "CONSUMPTION REQUIRED", "MOULD ID", "TONNAGE", "RUNNER WT", "PART WT",
+               "SHOT WT", "TONNAGE.1", "PAINT TYPE", "MOULD TYPE"]
+
+
 def parse_bom_csv(file_bytes):
     """
-    Header sits on row 5 (4 title rows above it). The ERP sometimes appends a
-    PHP fatal-error traceback to the end of the file, so rows without both an
-    OUTPUT CODE and INPUT CODE are dropped.
+    The ERP puts a few title rows ("BOM REGISTER", "AS ON ...") above the
+    column headers, and how many changes from time to time - so the header
+    row is found by its contents (OUTPUT CODE + INPUT CODE), not by its
+    position. The ERP sometimes appends a PHP fatal-error traceback to the
+    end of the file, so rows without both an OUTPUT CODE and INPUT CODE are
+    dropped.
     """
+    if not file_bytes or not file_bytes.strip():
+        print("    The ERP sent an empty file (no BOM for this unit?).")
+        return pd.DataFrame()
     try:
-        df = pd.read_csv(io.BytesIO(file_bytes), header=4, low_memory=False)
+        text = file_bytes.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        text = file_bytes.decode("latin-1")
+
+    offset = 0
+    header_found = False
+    first_data = None          # where the data starts, if the file has no header row at all
+    for line in text.splitlines(keepends=True)[:50]:
+        upper = line.upper()
+        if "OUTPUT CODE" in upper and "INPUT CODE" in upper:
+            header_found = True
+            break
+        if first_data is None and line.lstrip('"').upper().startswith(("UNITECH", "VTECH")) and line.count(",") >= 12:
+            first_data = offset
+        offset += len(line)
+
+    try:
+        if header_found:
+            df = pd.read_csv(io.StringIO(text[offset:]), low_memory=False)
+        elif first_data is not None:
+            print("    (no header row in the file - using the standard BOM Register column order)")
+            df = pd.read_csv(io.StringIO(text[first_data:]), header=None, low_memory=False)
+            df.columns = (BOM_COLUMNS + [f"extra_{i}" for i in range(len(df.columns))])[:len(df.columns)]
+        else:
+            first = " | ".join(l.strip()[:60] for l in text.splitlines()[:3])
+            print(f"    No BOM rows in the file, skipping. It starts: {first}")
+            return pd.DataFrame()
     except Exception as e:
         print(f"    Could not parse CSV: {e}")
         return pd.DataFrame()
+    df.columns = [str(c).strip() for c in df.columns]
 
     required = {"OUTPUT CODE", "INPUT CODE", "NORM QTY"}
     if not required.issubset(df.columns):
