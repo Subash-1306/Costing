@@ -19,7 +19,6 @@ import queue
 import uuid
 import sqlite3
 import io
-import re
 import openpyxl.styles
 import openpyxl.utils
 import calendar
@@ -87,10 +86,7 @@ def require_sign_in():
     if request.path.startswith(OPEN_PATHS) or session.get("signed_in"):
         return None
     if not costing_config.load_settings().get("password_hash"):
-        # Tailscale's HTTPS relay ("tailscale serve") connects from 127.0.0.1 too,
-        # so a request it forwarded is never treated as "on this PC".
-        relayed = request.headers.get("X-Forwarded-For") or request.headers.get("Tailscale-User-Login")
-        if request.remote_addr in LOCAL_ADDRESSES and not relayed:
+        if request.remote_addr in LOCAL_ADDRESSES:
             return None
         return Response("No dashboard password is set yet. On the server, run deploy\\Set-Password.bat, "
                         "then open this page again.", status=403, mimetype="text/plain")
@@ -133,7 +129,6 @@ ANALYTICS_DB = os.path.join(DATABASE_DIR, "Analytics.db")
 NAV_ITEMS = [
     {"key": "overview", "label": "Overview", "ready": True},
     {"key": "part_margin", "label": "Part-wise margin", "ready": True},
-    {"key": "negative_margin", "label": "Negative margin", "ready": True},
     {"key": "tree", "label": "BOM tree", "ready": True},
     {"key": "part_cost", "label": "Part cost calc", "ready": True},
     {"key": "month_posting", "label": "Month posting", "ready": True},
@@ -3887,184 +3882,6 @@ def download(key):
     if not os.path.exists(db_path):
         return f"Database not found yet: {SCRIPTS[key]['db']}", 404
     return send_file(db_path, as_attachment=True)
-
-
-# ---- Photos of negative-margin parts (Phase 2) ----
-# Files: PHOTOS\<item code>\<when>_<random>.jpg (+ _t.jpg thumbnail), folder set by
-# photos_dir in settings.json. Details: DATABASE\Part_Photos.db.
-PHOTOS_DB = os.path.join(DATABASE_DIR, "Part_Photos.db")
-PHOTO_MAX_BYTES = 25 * 1024 * 1024
-PHOTO_MAX_SIDE = 1600
-PHOTO_THUMB_SIDE = 360
-SAFE_CODE = re.compile(r"^[A-Za-z0-9._-]{1,60}$")
-
-
-def photos_connection():
-    conn = sqlite3.connect(PHOTOS_DB, timeout=60)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS part_photos (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            item_code TEXT NOT NULL, month TEXT, file_name TEXT NOT NULL, thumb_name TEXT,
-            note TEXT, taken_at TEXT NOT NULL, bytes INTEGER
-        )
-    """)
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_part_photos_item ON part_photos (item_code, id)")
-    return conn
-
-
-def photo_row_to_dict(row):
-    pid, code, month, file_name, thumb_name, note, taken_at, size = row
-    try:
-        when = datetime.strptime(taken_at, "%Y-%m-%d %H:%M:%S").strftime("%d %b %Y %H:%M")
-    except ValueError:
-        when = taken_at
-    return {"id": pid, "item_code": code, "month": month, "month_label": month_key_to_label(month) if month else "",
-            "note": note or "", "taken_at": when, "url": f"/photos/{pid}",
-            "thumb_url": f"/photos/{pid}?size=thumb", "bytes": size}
-
-
-def get_photos_by_item(codes=None):
-    """{item_code: [photo, ...newest first]}"""
-    if not os.path.exists(PHOTOS_DB):
-        return {}
-    conn = photos_connection()
-    rows = conn.execute("""SELECT id, item_code, month, file_name, thumb_name, note, taken_at, bytes
-                           FROM part_photos ORDER BY id DESC""").fetchall()
-    conn.close()
-    result = {}
-    for r in rows:
-        if codes is None or r[1] in codes:
-            result.setdefault(r[1], []).append(photo_row_to_dict(r))
-    return result
-
-
-def save_photo_file(raw, item_code):
-    """Saves the photo (turned upright, at most 1600 px, JPEG) and a small
-    thumbnail. Without Pillow the original file is kept as it came."""
-    folder = os.path.join(costing_config.photos_dir(), item_code)
-    os.makedirs(folder, exist_ok=True)
-    stem = datetime.now().strftime("%Y%m%d_%H%M%S") + "_" + secrets.token_hex(3)
-    try:
-        from PIL import Image, ImageOps
-        img = Image.open(io.BytesIO(raw))
-        img = ImageOps.exif_transpose(img).convert("RGB")
-        full = img.copy()
-        full.thumbnail((PHOTO_MAX_SIDE, PHOTO_MAX_SIDE))
-        file_name = f"{stem}.jpg"
-        full.save(os.path.join(folder, file_name), "JPEG", quality=82, optimize=True)
-        thumb = img.copy()
-        thumb.thumbnail((PHOTO_THUMB_SIDE, PHOTO_THUMB_SIDE))
-        thumb_name = f"{stem}_t.jpg"
-        thumb.save(os.path.join(folder, thumb_name), "JPEG", quality=75)
-        return file_name, thumb_name, os.path.getsize(os.path.join(folder, file_name))
-    except ImportError:
-        pass
-    except Exception as e:
-        raise ValueError(f"That file isn't a photo the dashboard can read ({e.__class__.__name__}).")
-    ext = ".jpg"
-    if raw[:8] == b"\x89PNG\r\n\x1a\n":
-        ext = ".png"
-    elif raw[4:12] in (b"ftypheic", b"ftypheix", b"ftypmif1"):
-        ext = ".heic"
-    file_name = stem + ext
-    with open(os.path.join(folder, file_name), "wb") as f:
-        f.write(raw)
-    return file_name, None, len(raw)
-
-
-@app.route("/negative_margin")
-def negative_margin():
-    months = get_all_relevant_months()
-    selected_month = request.args.get("month", months[0] if months else None)
-    selling_price_ready = weighted_selling_price_has_run(selected_month) if selected_month else False
-    rows = []
-    if selected_month and selling_price_ready:
-        rows = [r for r in build_part_margin_table(selected_month, include_missing=True, sort_by="margin", sort_dir="asc")
-                if r.get("margin") is not None and r["margin"] < 0]
-    names = get_item_descriptions() if rows else {}
-    photos = get_photos_by_item({r["item_code"] for r in rows}) if rows else {}
-    for r in rows:
-        r["item_name"] = names.get(r["item_code"]) or ""
-        r["photos"] = photos.get(r["item_code"], [])
-    return render_analytics_page(
-        "negative_margin.html", "negative_margin",
-        months_override=months,
-        selling_price_ready=selling_price_ready,
-        rows=rows,
-        total_loss=sum(r["margin"] for r in rows),
-        focus=request.args.get("focus", ""),
-    )
-
-
-@app.route("/photos/upload", methods=["POST"])
-def upload_photo():
-    item_code = (request.form.get("item_code") or "").strip()
-    month = (request.form.get("month") or "").strip()
-    note = (request.form.get("note") or "").strip()[:500]
-    upload = request.files.get("photo")
-    if not SAFE_CODE.match(item_code):
-        return jsonify({"error": "Unknown part code"}), 400
-    if month and not re.match(r"^\d{4}_\d{2}$", month):
-        return jsonify({"error": "Unknown month"}), 400
-    if not upload:
-        return jsonify({"error": "No photo received"}), 400
-    raw = upload.read(PHOTO_MAX_BYTES + 1)
-    if len(raw) > PHOTO_MAX_BYTES:
-        return jsonify({"error": "That photo is over 25 MB"}), 400
-    if not raw:
-        return jsonify({"error": "The photo was empty"}), 400
-    try:
-        file_name, thumb_name, size = save_photo_file(raw, item_code)
-    except ValueError as e:
-        return jsonify({"error": str(e)}), 400
-    conn = photos_connection()
-    cur = conn.execute("""INSERT INTO part_photos (item_code, month, file_name, thumb_name, note, taken_at, bytes)
-                          VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                       (item_code, month or None, file_name, thumb_name, note,
-                        datetime.now().strftime("%Y-%m-%d %H:%M:%S"), size))
-    conn.commit()
-    row = conn.execute("""SELECT id, item_code, month, file_name, thumb_name, note, taken_at, bytes
-                          FROM part_photos WHERE id = ?""", (cur.lastrowid,)).fetchone()
-    conn.close()
-    return jsonify({"ok": True, "photo": photo_row_to_dict(row)})
-
-
-@app.route("/photos/<int:photo_id>")
-def get_photo(photo_id):
-    if not os.path.exists(PHOTOS_DB):
-        return Response("Not found", status=404)
-    conn = photos_connection()
-    row = conn.execute("SELECT item_code, file_name, thumb_name FROM part_photos WHERE id = ?", (photo_id,)).fetchone()
-    conn.close()
-    if not row:
-        return Response("Not found", status=404)
-    code, file_name, thumb_name = row
-    name = thumb_name if (request.args.get("size") == "thumb" and thumb_name) else file_name
-    path = os.path.join(costing_config.photos_dir(), code, name)
-    if not os.path.exists(path):
-        return Response("The photo file is missing from the PHOTOS folder", status=404)
-    resp = send_file(path, max_age=86400)
-    resp.headers["Cache-Control"] = "private, max-age=86400"
-    return resp
-
-
-@app.route("/photos/<int:photo_id>/delete", methods=["POST"])
-def delete_photo(photo_id):
-    conn = photos_connection()
-    row = conn.execute("SELECT item_code, file_name, thumb_name FROM part_photos WHERE id = ?", (photo_id,)).fetchone()
-    if not row:
-        conn.close()
-        return jsonify({"error": "Photo not found"}), 404
-    conn.execute("DELETE FROM part_photos WHERE id = ?", (photo_id,))
-    conn.commit()
-    conn.close()
-    for name in row[1:]:
-        if name:
-            try:
-                os.remove(os.path.join(costing_config.photos_dir(), row[0], name))
-            except OSError:
-                pass
-    return jsonify({"ok": True})
 
 
 # ---- Auto-sync (scheduler.py), backups and start-up ----
