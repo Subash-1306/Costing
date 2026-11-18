@@ -139,6 +139,9 @@ function showFgSummary(itemCode) {
           <div class="fg-kpi"><div class="fg-kpi-label">Last invoiced to / from</div><div class="fg-kpi-value fg-kpi-small">${data.customer} / ${data.unit}</div></div>
         </div>
         <div class="fg-summary-subheading">Cost source: ${data.cost_source}</div>`;
+      if (data.margin !== null && data.margin < 0) {
+        html += `<div class="fg-summary-subheading"><a href="/negative_margin?month={{ selected_month }}&focus=${encodeURIComponent(itemCode)}">📷 Photos of this part (Negative margin page)</a></div>`;
+      }
 
       if (data.root_row || data.sub_items.length) {
         html += `

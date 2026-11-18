@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{{ page_label }} - Unitech Dashboard</title>
 <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
@@ -12,7 +13,7 @@
     <div class="sidebar-title">🏭 Unitech dashboard</div>
     <div class="nav-list">
       {% set icons = {
-        'overview': '🏠', 'tree': '🌳', 'part_cost': '🧮', 'part_margin': '📊',
+        'overview': '🏠', 'tree': '🌳', 'part_cost': '🧮', 'part_margin': '📊', 'negative_margin': '📷',
         'month_posting': '📅', 'weighted_price': '💲', 'cycle_time': '⏱️',
         'other_cost': '💵', 'data_sync': '🔄'
       } %}

@@ -30,6 +30,8 @@ DEFAULTS = {
     "port": 5000,
     "auto_sync": True,         # timed ERP syncs (see DASHBOARD\scheduler.py)
     "backup_dir": "",          # blank = costing\backups
+    "photos_dir": "",          # blank = costing\PHOTOS (photos of negative-margin parts)
+    "update_branch": "main",   # "phase-1" = go back to Phase 1 (deploy\Switch-Phase.bat)
     "backup_keep_days": 7,
     "password_hash": "",
     "secret_key": "",
@@ -81,6 +83,10 @@ def downloads_dir():
 
 def backup_dir():
     return _folder("backup_dir", "COSTING_BACKUP_DIR", "backups")
+
+
+def photos_dir():
+    return _folder("photos_dir", "COSTING_PHOTOS_DIR", "PHOTOS")
 
 
 # ---------- ERP login (Windows DPAPI, machine scope) ----------

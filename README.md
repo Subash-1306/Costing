@@ -48,6 +48,26 @@ Same as the MES server. Needs **Git for Windows** (git-scm.com, default options)
 
 `config`, the databases, backups and logs are never touched by an update. Each update is written to `logs\update.log`.
 
+## Phase 2: Tailscale access and part photos
+
+**Opening it over Tailscale (phones and laptops anywhere, no open ports):**
+1. Install **Tailscale** on the server (tailscale.com/download/windows) and sign in with the company Tailscale account. Install the Tailscale app on each phone or laptop that should open the dashboard, signed in to the same account.
+2. On the server, double-click **`deploy\Setup-Tailscale.bat`**. It makes sure a dashboard password is set, publishes the dashboard on the server's private Tailscale address, and prints the address to open, for example `https://<server name>.<your tailnet>.ts.net/`.
+3. If it says the https address isn't available, switch on **MagicDNS** and **HTTPS Certificates** in the Tailscale admin console (DNS page) and run it again. Meanwhile `http://<Tailscale IP>:5000/` works.
+
+Everyone coming over Tailscale has to sign in with the dashboard password.
+
+**Photos of negative-margin parts:** the **Negative margin** page lists every FG sold below its cost in the chosen month, biggest loss first. **Take / add photo** opens the camera on a phone (or a file picker on a PC), with an optional note. Photos stay with the part across months and are kept in `PHOTOS\<part code>\` (folder set by `photos_dir` in `config\settings.json`), details in `DATABASE\Part_Photos.db`. They are not on GitHub; add the `PHOTOS` folder to whatever you back up. The Part-wise margin summary of a loss-making part links to its photos.
+
+## Going back to Phase 1
+
+GitHub keeps the version from before Phase 2 as the branch **`phase-1`**. To go back, double-click **`deploy\Switch-Phase.bat`** on the server and type **1**. It:
+- sets `"update_branch": "phase-1"` in `config\settings.json` and runs the normal update, which installs that version and restarts the dashboard (the nightly update then stays on Phase 1)
+- switches off the Tailscale https address (`tailscale serve reset`) and its firewall rule
+- keeps a copy of itself in `phase-switch\`, because Phase 1 doesn't have this tool
+
+Databases, settings, photos and backups are not touched. To return to Phase 2, run **`phase-switch\Switch-Phase.bat`** and type **2**. Needs `Install-AutoUpdate.bat` to have been run once.
+
 ## Automatic syncs
 
 The Data Sync page shows each script's schedule and its last run (manual or automatic). The times are in `DASHBOARD\scheduler.py`:
