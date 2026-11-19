@@ -125,6 +125,10 @@ def main():
         rows = flatten(detail)
         code_col, entry_col, company_col = (pe.COLUMNS.index(c) for c in ("item_code", "entry_no", "company"))
         if not rows:
+            # deleted / emptied in the ERP since: nothing to add, don't ask again
+            if not report_only:
+                conn.execute("INSERT OR REPLACE INTO repair_outputs_done VALUES (?, ?, ?, ?)",
+                             (table_name, eid, datetime.now().strftime("%Y-%m-%d %H:%M"), 0))
             checked += 1
             continue
         entry_no, company = rows[0][entry_col], rows[0][company_col]

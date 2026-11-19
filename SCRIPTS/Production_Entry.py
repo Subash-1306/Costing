@@ -486,10 +486,32 @@ def date_to_year_month(date_str):
     return f"{year}_{month}"
 
 
+def _as_dict(value):
+    """The ERP (PHP) sends an empty object as [] and sometimes wraps one in a
+    list - always hand back a dict."""
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, list) and value and isinstance(value[0], dict):
+        return value[0]
+    return {}
+
+
+def _as_list(value):
+    """An item list can come as [..], as {"0": .., "1": ..} or as null."""
+    if isinstance(value, dict):
+        value = list(value.values())
+    if not isinstance(value, list):
+        return []
+    return [v for v in value if isinstance(v, dict)]
+
+
 def flatten_production_entry(entry_json):
     rows = []
-    d = entry_json["data"]["details"]
-    grp = entry_json["data"]["grp_details"]
+    data = _as_dict(entry_json.get("data"))
+    d = _as_dict(data.get("details"))
+    grp = _as_dict(data.get("grp_details"))
+    if not d:
+        return rows            # a deleted / empty entry: nothing to store
 
     header = [
         d.get("txt_ref_schema_plant"),
@@ -510,8 +532,8 @@ def flatten_production_entry(entry_json):
     mould_field = d.get("txt_ref_schema_mould")
     runner_per_part = get_runner_per_part(mould_field)
 
-    output_items = grp.get("production_entry_output_item_group", []) or [{}]
-    input_items = grp.get("production_entry_input_item_group", []) or [{}]
+    output_items = _as_list(grp.get("production_entry_output_item_group")) or [{}]
+    input_items = _as_list(grp.get("production_entry_input_item_group")) or [{}]
 
     for out in output_items:
         acc_qty = out.get("acc_qty") or 0
@@ -570,8 +592,11 @@ def flatten_production_entry(entry_json):
 
 def flatten_subassembly_entry(entry_json):
     rows = []
-    d = entry_json["data"]["details"]
-    grp = entry_json["data"]["grp_details"]
+    data = _as_dict(entry_json.get("data"))
+    d = _as_dict(data.get("details"))
+    grp = _as_dict(data.get("grp_details"))
+    if not d:
+        return rows            # a deleted / empty entry: nothing to store
 
     header = [
         d.get("txt_ref_schema_plant"),
@@ -589,8 +614,8 @@ def flatten_subassembly_entry(entry_json):
         None,  # mould - not applicable for Sub Assembly
     ]
 
-    output_items = grp.get("sub_assembly_entry_output_item_group", []) or [{}]
-    input_items = grp.get("sub_assembly_entry_input_item_group", []) or [{}]
+    output_items = _as_list(grp.get("sub_assembly_entry_output_item_group")) or [{}]
+    input_items = _as_list(grp.get("sub_assembly_entry_input_item_group")) or [{}]
 
     for out in output_items:
         acc_qty = out.get("acc_qty") or 0
