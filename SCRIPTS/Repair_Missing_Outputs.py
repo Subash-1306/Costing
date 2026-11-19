@@ -38,6 +38,7 @@ TABLES = {
     "sub_assembly_entry": (922, pe.flatten_subassembly_entry),
 }
 CLIENT_COMPANY = {"unitech": "9", "veetech": "11", "vtech": "11"}
+PAUSE_BETWEEN_ENTRIES = 0.3    # a little gentler on the ERP than the normal sync
 
 
 def arg_value(name):
@@ -54,6 +55,22 @@ def to_yyyymmdd(ddmmyyyy):
         return f"{y}{int(m):02d}{int(d):02d}"
     except (AttributeError, ValueError):
         return None
+
+
+def fetch_with_retries(sessions, cc, entry_type, schema_id, eid):
+    """The ERP sometimes drops the connection after many requests in a row.
+    Wait and try again (30 s, 1 min, 2 min), logging in afresh before the
+    last tries. Returns the entry, or None if it still won't answer."""
+    for attempt, wait in enumerate((0, 30, 60, 120)):
+        if wait:
+            print(f"    (ERP not answering - waiting {wait} s, then trying entry {eid} again)")
+            time.sleep(wait)
+            if attempt >= 2:
+                sessions[cc] = pe.login(cc) or sessions[cc]
+        detail = pe.fetch_detail(sessions[cc], entry_type, schema_id, eid)
+        if detail and detail.get("status") == "success":
+            return detail
+    return None
 
 
 def main():
@@ -100,11 +117,12 @@ def main():
     print(f"{len(todo)} entr(ies) to check{' (dated on/after ' + from_date + ')' if from_date else ''}"
           f"{' - report only, nothing will change' if report_only else ''}.")
     if todo:
-        print(f"At about {pe.DELAY_BETWEEN_CALLS + 0.35:.1f} s each that is roughly "
-              f"{len(todo) * (pe.DELAY_BETWEEN_CALLS + 0.35) / 3600:.1f} hour(s). Safe to stop and start again.\n")
+        print(f"At about {PAUSE_BETWEEN_ENTRIES + 0.35:.1f} s each that is roughly "
+              f"{len(todo) * (PAUSE_BETWEEN_ENTRIES + 0.35) / 3600:.1f} hour(s). Safe to stop and start again.\n")
 
     sessions = {}
     checked = added_entries = added_rows = failed = 0
+    failed_in_a_row = 0
     months = set()
     started = time.time()
     for table_name, eid in todo:
@@ -116,11 +134,17 @@ def main():
             if not sessions[cc]:
                 print(f"❌ Could not log in for {company_name} - stopping (run again later).")
                 break
-        detail = pe.fetch_detail(sessions[cc], entry_type, schema_id, eid)
-        time.sleep(pe.DELAY_BETWEEN_CALLS)
-        if not (detail and detail.get("status") == "success"):
+        detail = fetch_with_retries(sessions, cc, entry_type, schema_id, eid)
+        time.sleep(PAUSE_BETWEEN_ENTRIES)
+        if not detail:
             failed += 1                    # not marked done: tried again next run
+            failed_in_a_row += 1
+            conn.commit()
+            if failed_in_a_row >= 5:
+                print("\n❌ The ERP has stopped answering. Progress is saved - run this again later and it carries on.")
+                break
             continue
+        failed_in_a_row = 0
 
         rows = flatten(detail)
         code_col, entry_col, company_col = (pe.COLUMNS.index(c) for c in ("item_code", "entry_no", "company"))
