@@ -46,16 +46,16 @@ def fetch_erp_version(session, eid, entry_no):
     for table, schema_id, flatten in ENTRY_TABLES:
         detail = pe.fetch_detail(session, table, schema_id, eid)
         if detail and detail.get("status") == "success":
-            d = detail.get("data", {}).get("details", {}) or {}
+            d = pe._as_dict(pe._as_dict(detail.get("data")).get("details"))
             if str(d.get("entry_no")) == str(entry_no):
                 return table, detail, flatten
     return None, None, None
 
 
 def erp_outputs(detail, table):
-    grp = detail["data"].get("grp_details", {}) or {}
-    outs = grp.get(f"{table}_output_item_group") or []
-    ins = grp.get(f"{table}_input_item_group") or []
+    grp = pe._as_dict(pe._as_dict(detail.get("data")).get("grp_details"))
+    outs = pe._as_list(grp.get(f"{table}_output_item_group"))
+    ins = pe._as_list(grp.get(f"{table}_input_item_group"))
     return outs, ins, sorted(k for k in grp)
 
 
