@@ -455,7 +455,20 @@ def get_new_entry_ids(session, source_table_name, schema_id, processed_ids, full
 
 
 def fetch_detail(session, source_table_name, schema_id, internal_code):
-    resp = session.post(
+    """The entry's details, or None if the ERP didn't answer properly
+    (dropped connection, timeout, not JSON) - the caller retries it later."""
+    try:
+        resp = _post_detail(session, source_table_name, schema_id, internal_code)
+    except requests.RequestException:
+        return None
+    try:
+        return resp.json()
+    except ValueError:
+        return None
+
+
+def _post_detail(session, source_table_name, schema_id, internal_code):
+    return session.post(
         DATA_URL,
         params={"a": "GetSchemaModuleDetailsForUpdateNew"},
         data={
@@ -467,11 +480,8 @@ def fetch_detail(session, source_table_name, schema_id, internal_code):
             "ur_edit_days": 0,
         },
         headers=HEADERS,
+        timeout=60,
     )
-    try:
-        return resp.json()
-    except ValueError:
-        return None
 
 
 # ---------- Flatten functions (one per entry type, since field names differ) ----------
