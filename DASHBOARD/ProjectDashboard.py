@@ -164,6 +164,14 @@ SCRIPTS = {
         "db": "Production_Entry.db",
         "needs_month": False,
     },
+    "repair_outputs": {
+        "label": "Repair missing output codes",
+        "description": "One-time: adds item codes that entries have in the ERP but were never saved (entries with 2+ codes). Hours; safe to stop and run again",
+        "script": "Repair_Missing_Outputs.py",
+        "needs_login": True,   # uses the ERP login typed when the dashboard started
+        "db": "Production_Entry.db",
+        "needs_month": False,
+    },
     "vendor_price_master": {
         "label": "Vendor Price Master",
         "description": "Monthly snapshot of the ERP's mapped vendor purchase prices (supplier item mapping)",

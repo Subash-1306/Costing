@@ -562,9 +562,9 @@ def flatten_production_entry(entry_json):
             full_row = [None if v is None else str(v) for v in full_row]
             rows.append(full_row)
 
-    if len(output_items) > 1:
-        print(f"  ⚠️ Entry {d.get('entry_no')} has {len(output_items)} output items — input qty was split. Please spot-check.")
-
+    # Several output codes from one entry (e.g. a family mould making LH + RH):
+    # each code gets norm qty x its own qty of every material, which adds up to
+    # the ERP's input qty for the entry (checked on BP2627-46332).
     return rows
 
 
@@ -636,9 +636,9 @@ def flatten_subassembly_entry(entry_json):
             full_row = [None if v is None else str(v) for v in full_row]
             rows.append(full_row)
 
-    if len(output_items) > 1:
-        print(f"  ⚠️ Entry {d.get('entry_no')} has {len(output_items)} output items — input qty was split. Please spot-check.")
-
+    # Several output codes from one entry (e.g. a family mould making LH + RH):
+    # each code gets norm qty x its own qty of every material, which adds up to
+    # the ERP's input qty for the entry (checked on BP2627-46332).
     return rows
 
 
