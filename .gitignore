@@ -16,3 +16,5 @@ __pycache__/
 # photos of negative-margin parts, and the phase switch kept outside the program files
 PHOTOS/
 phase-switch/
+srv.log
+*.log
