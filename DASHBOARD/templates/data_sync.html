@@ -51,6 +51,13 @@
       <a class="download-btn" href="/download/{{ key }}" id="download-{{ key }}">Download DB</a>
     </div>
 
+    {% if key in month_download_keys %}
+    <div class="range-download-row">
+      <button onclick="downloadMonth('{{ key }}')">Download Excel for the year / month above</button>
+    </div>
+    <div class="save-status" id="month-status-{{ key }}"></div>
+    {% endif %}
+
     {% if key in range_download_keys %}
     <div class="range-download-row">
       <input type="text" id="from-date-{{ key }}" placeholder="From (dd/mm/yyyy)">
@@ -394,6 +401,41 @@ function uploadMissingStores(key) {
       statusEl.textContent = "❌ " + err;
       statusEl.className = "save-status error";
     });
+}
+
+async function downloadMonth(key) {
+  // the same Year / Month boxes the card uses for Run
+  const year = document.getElementById(`year-${key}`).value.trim();
+  const month = document.getElementById(`month-${key}`).value.trim();
+  const statusEl = document.getElementById(`month-status-${key}`);
+  if (!/^\d{4}$/.test(year) || !/^\d{1,2}$/.test(month) || +month < 1 || +month > 12) {
+    statusEl.textContent = "❌ Enter a year like 2026 and a month from 1 to 12";
+    statusEl.className = "save-status error";
+    return;
+  }
+  statusEl.textContent = "Preparing the Excel file...";
+  statusEl.className = "save-status running";
+  try {
+    const res = await fetch(`/data_sync/download_month/${key}?year=${year}&month=${+month}`);
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({ error: `Download failed (${res.status})` }));
+      throw new Error(data.error);
+    }
+    const blob = await res.blob();
+    const name = (res.headers.get('Content-Disposition') || '').match(/filename="?([^";]+)"?/);
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = name ? name[1] : `${key}_${year}_${month}.xlsx`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+    statusEl.textContent = "✅ Downloaded";
+    statusEl.className = "save-status success";
+  } catch (err) {
+    statusEl.textContent = "❌ " + err.message;
+    statusEl.className = "save-status error";
+  }
 }
 
 function downloadRange(key) {
