@@ -574,6 +574,83 @@ DOWNLOAD_RANGE_CONFIG = {
 }
 
 
+# Month-by-month data downloaded as one Excel sheet for a chosen month
+MONTH_DOWNLOAD_CONFIG = {
+    "opncls_stock": {
+        "db": "Opening_Closing_Stock.db", "table": "opening_closing_stock", "month_column": "month",
+        "title": "Opening Closing Stock",
+        "order_by": "company, unit, warehouse, item_code",
+        "headers": {"company": "Company", "unit": "Unit", "warehouse": "W/H", "warehouse_desc": "W/H Desc.",
+                    "erp_code": "ERP Code", "item_code": "Item Code", "item_name": "Item Name", "uom": "UOM",
+                    "item_group": "Item Group", "item_sub_group": "Item Sub Group", "month": "Month",
+                    "opening_qty": "Opening Qty", "closing_qty": "Closing Qty"},
+        "numbers": {"opening_qty", "closing_qty"},
+    },
+}
+
+
+@app.route("/data_sync/download_month/<key>")
+def data_sync_download_month(key):
+    """One month of a month-by-month table as Excel, e.g. ?year=2026&month=10"""
+    config = MONTH_DOWNLOAD_CONFIG.get(key)
+    if not config:
+        return jsonify({"error": "This script doesn't have a month download"}), 400
+    try:
+        year, month = int(request.args.get("year", "")), int(request.args.get("month", ""))
+        if not (2000 <= year <= 2100 and 1 <= month <= 12):
+            raise ValueError
+    except ValueError:
+        return jsonify({"error": "Enter a year like 2026 and a month from 1 to 12"}), 400
+    month_key = f"{year}_{month:02d}"
+    label = month_key_to_label(month_key)
+
+    db_path = os.path.join(DATABASE_DIR, config["db"])
+    if not os.path.exists(db_path):
+        return jsonify({"error": f"{config['db']} not found - run this script at least once first"}), 404
+    conn = sqlite3.connect(db_path, timeout=60)
+    columns = [r[1] for r in conn.execute(f"PRAGMA table_info({config['table']})")]
+    rows = conn.execute(f"SELECT {', '.join(columns)} FROM {config['table']} WHERE {config['month_column']} = ? "
+                        f"ORDER BY {config['order_by']}", (month_key,)).fetchall()
+    conn.close()
+    if not rows:
+        return jsonify({"error": f"Nothing saved for {label} - run {config['title']} for {year} / {month} first"}), 404
+
+    number_cols = {i for i, c in enumerate(columns) if c in config["numbers"]}
+
+    def as_number(v):
+        try:
+            return float(str(v).replace(",", "")) if v not in (None, "") else None
+        except ValueError:
+            return v
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = label
+    ws.append([config["headers"].get(c, c) for c in columns])
+    for row in rows:
+        ws.append([as_number(v) if i in number_cols else v for i, v in enumerate(row)])
+    bold = openpyxl.styles.Font(bold=True)
+    for cell in ws[1]:
+        cell.font = bold
+    for i, c in enumerate(columns, start=1):
+        letter = openpyxl.utils.get_column_letter(i)
+        if i - 1 in number_cols:
+            for (cell,) in ws.iter_rows(min_row=2, min_col=i, max_col=i):
+                cell.number_format = "#,##0.000"
+        width = max([len(str(ws.cell(row=1, column=i).value))] +
+                    [len(str(r[i - 1] or "")) for r in rows[:500]])
+        ws.column_dimensions[letter].width = min(max(width + 2, 8), 50)
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = ws.dimensions
+
+    buffer = io.BytesIO()
+    wb.save(buffer)
+    buffer.seek(0)
+    return send_file(buffer, as_attachment=True,
+                     download_name=f"{config['title'].replace(' ', '_')}_{year}_{month:02d}.xlsx",
+                     mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+
 def ddmmyyyy_to_sortable(date_str):
     """'15/09/2026' -> '20260915' - a plain string that sorts/compares correctly."""
     day, month, year = date_str.split("/")
@@ -3751,6 +3828,7 @@ def data_sync():
     return render_template("data_sync.html", nav_items=NAV_ITEMS, active_page="data_sync",
                             page_label="Data sync", scripts=SCRIPTS, months=[],
                             range_download_keys=set(DOWNLOAD_RANGE_CONFIG.keys()),
+                            month_download_keys=set(MONTH_DOWNLOAD_CONFIG.keys()),
                             erp_login_ready=bool(ERP_LOGIN),
                             last_runs=get_last_runs(),
                             schedule_text={k: scheduler.describe(k) for k in SCRIPTS},
