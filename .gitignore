@@ -12,3 +12,5 @@ venv/
 .env
 __pycache__/
 *.pyc
+srv.log
+*.log
