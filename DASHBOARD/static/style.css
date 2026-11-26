@@ -1363,3 +1363,11 @@ thead .total-col {
   font-size: 13px;
   color: var(--error);
 }
+
+/* links sitting in a toolbar keep their own width */
+.toolbar .toolbar-link {
+  flex: none;
+  width: auto;
+  padding-left: 16px;
+  padding-right: 16px;
+}

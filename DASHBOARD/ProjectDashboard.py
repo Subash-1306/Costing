@@ -78,7 +78,7 @@ app.permanent_session_lifetime = timedelta(days=30)
 # ---- Sign-in: one password (deploy\Set-Password.bat). Until it is set,
 # the dashboard opens only on the PC it runs on. ----
 LOCAL_ADDRESSES = {"127.0.0.1", "::1"}
-OPEN_PATHS = ("/login", "/health", "/static/")
+OPEN_PATHS = ("/login", "/health", "/static/", "/favicon.ico")
 
 
 @app.before_request
@@ -117,6 +117,11 @@ def login_page():
 def logout_page():
     session.clear()
     return redirect("/login")
+
+
+@app.route("/favicon.ico")
+def favicon():
+    return send_file(os.path.join(BASE_DIR, "static", "favicon.ico"), max_age=86400)
 
 
 @app.route("/health")
@@ -3431,22 +3436,21 @@ def get_process_master_unit_stores():
     return combos
 
 
-@app.route("/other_cost")
-def other_cost():
-    months = get_all_relevant_months()
-    selected_month = request.args.get("month", months[0] if months else None)
-
-    unit_stores = get_process_master_unit_stores()
-    trimming_qty = get_trimming_prod_qty_by_unit_store(selected_month) if selected_month else {}
+def build_other_cost_rows(month, unit_stores=None):
+    """One row per Unit + Store from the Process Master, with that month's
+    saved costs. Trimming stores are worked out (Rs.1 per piece produced)."""
+    if unit_stores is None:
+        unit_stores = get_process_master_unit_stores()
+    trimming_qty = get_trimming_prod_qty_by_unit_store(month) if month else {}
 
     existing = {}
-    if selected_month and unit_stores:
+    if month and unit_stores:
         conn = get_other_cost_connection()
         cur = conn.cursor()
         col_list = ", ".join(key for key, _ in OTHER_COST_FIELDS)
         cur.execute(f"""
             SELECT unit, store, {col_list} FROM other_cost_master WHERE month = ?
-        """, (selected_month,))
+        """, (month,))
         for row in cur.fetchall():
             unit, store = row[0], row[1]
             values = dict(zip([key for key, _ in OTHER_COST_FIELDS], row[2:]))
@@ -3473,13 +3477,77 @@ def other_cost():
             "is_trimming": is_trimming,
             "costs": costs,
         })
+    return rows
 
+
+@app.route("/other_cost")
+def other_cost():
+    months = get_all_relevant_months()
+    selected_month = request.args.get("month", months[0] if months else None)
     return render_analytics_page(
         "other_cost.html", "other_cost",
         months_override=months,
-        rows=rows,
+        rows=build_other_cost_rows(selected_month),
         fields=OTHER_COST_FIELDS,
     )
+
+
+@app.route("/other_cost/download")
+def other_cost_download():
+    """?month=2026_10 -> that month; ?month=all -> every month, one row per
+    month + Unit + Store. Same numbers as the Other cost screen."""
+    months = get_all_relevant_months()
+    wanted = request.args.get("month", "")
+    if wanted == "all":
+        chosen = sorted(months)
+    elif wanted in months:
+        chosen = [wanted]
+    else:
+        return jsonify({"error": "Unknown month"}), 400
+
+    unit_stores = get_process_master_unit_stores()
+    keys = [key for key, _ in OTHER_COST_FIELDS]
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = month_key_to_label(chosen[0]) if len(chosen) == 1 else "All months"
+    ws.append(["Month", "Unit", "Store", "Process"] + [label for _, label in OTHER_COST_FIELDS] + ["Total"])
+
+    def number(v):
+        if v in (None, ""):
+            return None
+        try:
+            return float(str(v).replace(",", ""))
+        except ValueError:
+            return None
+
+    for month in chosen:
+        for r in build_other_cost_rows(month, unit_stores):
+            values = [number(r["costs"].get(k)) for k in keys]
+            if wanted == "all" and not any(values):
+                continue                     # skip empty months/stores in the all-months file
+            total = sum(v for v in values if v)
+            ws.append([month_key_to_label(month), r["unit"], r["store"], r["process"]] + values + [total or None])
+
+    bold = openpyxl.styles.Font(bold=True)
+    for cell in ws[1]:
+        cell.font = bold
+    for col in range(5, ws.max_column + 1):
+        for (cell,) in ws.iter_rows(min_row=2, min_col=col, max_col=col):
+            cell.number_format = "#,##0.00"
+    for col in range(1, ws.max_column + 1):
+        letter = openpyxl.utils.get_column_letter(col)
+        width = max(len(str(c.value or "")) for (c,) in ws.iter_rows(min_col=col, max_col=col, max_row=300))
+        ws.column_dimensions[letter].width = min(max(width + 2, 9), 40)
+    ws.freeze_panes = "E2"
+    ws.auto_filter.ref = ws.dimensions
+
+    buffer = io.BytesIO()
+    wb.save(buffer)
+    buffer.seek(0)
+    name = "Other_Cost_All_Months.xlsx" if wanted == "all" else f"Other_Cost_{wanted}.xlsx"
+    return send_file(buffer, as_attachment=True, download_name=name,
+                     mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 
 @app.route("/other_cost/save", methods=["POST"])
