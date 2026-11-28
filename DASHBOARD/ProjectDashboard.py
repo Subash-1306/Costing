@@ -661,6 +661,39 @@ def data_sync_download_month(key):
                      mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 
+# ---- Keep the heavy pages fast: refill the cost caches in the background ----
+# After a sync (or a cost edit) clears the caches, wait until no script has
+# been running for a minute, then recompute this month's and last month's
+# costs, so the next person to open Overview / Part-wise margin doesn't wait.
+_warmup_lock = threading.Lock()
+_warmup_timer = None
+WARMUP_DELAY_SECONDS = 60
+
+
+def schedule_cache_warmup():
+    global _warmup_timer
+    with _warmup_lock:
+        if _warmup_timer is not None:
+            _warmup_timer.cancel()
+        _warmup_timer = threading.Timer(WARMUP_DELAY_SECONDS, warm_cost_caches)
+        _warmup_timer.daemon = True
+        _warmup_timer.start()
+
+
+def warm_cost_caches():
+    if any(not job.get("finished", True) for job in list(JOBS.values())):
+        schedule_cache_warmup()          # a script is still running - try again a minute later
+        return
+    try:
+        months = sorted(get_all_relevant_months(), reverse=True)[:2]
+        started = time.time()
+        for month in months:
+            get_all_fg_total_costs(month)
+        print(f"[cache] costs ready for {', '.join(months)} ({time.time() - started:.0f} s)", flush=True)
+    except Exception as e:
+        print(f"[cache] warm-up skipped: {e}", flush=True)
+
+
 def ddmmyyyy_to_sortable(date_str):
     """'15/09/2026' -> '20260915' - a plain string that sorts/compares correctly."""
     day, month, year = date_str.split("/")
@@ -1264,7 +1297,10 @@ def overview():
 
 
 _part_cost_lookup_cache = {}   # {month: (computed_dict, cached_at_timestamp)}
-_PART_COST_CACHE_TTL_SECONDS = 600   # 10 min - safety net in case an invalidation trigger is ever missed
+_PART_COST_CACHE_TTL_SECONDS = 6 * 3600   # safety net only: data changes clear the caches straight away
+_fg_total_cost_cache = {}      # {month: (get_all_fg_total_costs result, cached_at_timestamp)}
+_cost_index = {}               # {id(costs dict): (costs dict, {item_code: [keys in dict order]})}
+_cache_generation = 0          # goes up on every invalidation; a result computed across one is not stored
 
 
 def invalidate_cost_cache():
@@ -1275,7 +1311,12 @@ def invalidate_cost_cache():
     keep showing yesterday's costs even right after fresh data has been
     synced - the TTL alone would eventually catch up, but a deliberate
     change should be reflected immediately, not after a wait."""
+    global _cache_generation
+    _cache_generation += 1
     _part_cost_lookup_cache.clear()
+    _fg_total_cost_cache.clear()
+    _cost_index.clear()
+    schedule_cache_warmup()
 
 
 def get_part_costs_for_lookup(month):
@@ -1305,13 +1346,29 @@ def get_part_costs_for_lookup(month):
     if not get_item_type_month_column_exists(month):
         return {}
 
+    generation = _cache_generation
     rows, _total = build_part_cost_calc(month, filters={}, page=1, page_size_override=None)
     result = {
         (r["item_code"], r["process"], r["unit"]): r["total_cost_per_part"]
         for r in rows
     }
-    _part_cost_lookup_cache[month] = (result, time.time())
+    if generation == _cache_generation:
+        _part_cost_lookup_cache[month] = (result, time.time())
     return result
+
+
+def costs_by_code(costs):
+    """{item_code: [(code, process, unit), ...]} for one month's part costs, in
+    the dict's own order - so find_sfg_cost can go straight to one item's
+    entries instead of scanning thousands of keys for every BOM node."""
+    hit = _cost_index.get(id(costs))
+    if hit is not None and hit[0] is costs:
+        return hit[1]
+    index = {}
+    for key in costs:
+        index.setdefault(key[0], []).append(key)
+    _cost_index[id(costs)] = (costs, index)
+    return index
 
 
 def find_sfg_cost(item_code, process, unit, month, cost_cache, months_desc):
@@ -1344,13 +1401,16 @@ def find_sfg_cost(item_code, process, unit, month, cost_cache, months_desc):
         if exact is not None:
             return exact, m, process, unit
 
+        own = costs_by_code(costs).get(item_code)
+        if not own:
+            continue
+
         # 2. hinted process, any other unit
-        for (code, proc, u), cost in costs.items():
-            if code == item_code and proc == process:
-                return cost, m, proc, u
+        for key in own:
+            if key[1] == process:
+                return costs[key], m, key[1], key[2]
 
         # 3. the item's OWN manufacturing process - prefer the same unit
-        own = [(c, p, u) for (c, p, u) in costs if c == item_code]
         same_unit = [k for k in own if k[2] == unit]
         for key in (same_unit + own):
             return costs[key], m, key[1], key[2]
@@ -1930,7 +1990,8 @@ def get_item_name(item_code):
     return name
 
 
-def get_single_fg_tree_detail(root_fg, month, item_types=None, weighted_prices=None, months_desc=None, cost_cache=None):
+def get_single_fg_tree_detail(root_fg, month, item_types=None, weighted_prices=None, months_desc=None, cost_cache=None,
+                              bom_rows=None):
     """
     Full cost breakdown for ONE FG: its own cost, every node in its BOM tree
     flattened (each with its own individual cost, per build_tree_nodes), and
@@ -1949,20 +2010,8 @@ def get_single_fg_tree_detail(root_fg, month, item_types=None, weighted_prices=N
     if cost_cache is None:
         cost_cache = {}
 
-    conn = sqlite3.connect(ANALYTICS_DB)
-    cur = conn.cursor()
-    cur.execute("""
-        SELECT root_fg, parent_code, child_code, child_item, norm_qty, level,
-               company, unit, process, wip_store, child_item_type
-        FROM bom_tree WHERE month = ? AND root_fg = ?
-    """, (month, root_fg))
-    bom_rows = [
-        {"root_fg": r[0], "parent_code": r[1], "child_code": r[2], "child_item": r[3],
-         "norm_qty": r[4], "level": r[5], "company": r[6], "unit": r[7],
-         "process": r[8], "wip_store": r[9], "child_item_type": r[10]}
-        for r in cur.fetchall()
-    ]
-    conn.close()
+    if bom_rows is None:
+        bom_rows = load_bom_rows(month, root_fg).get(root_fg, [])
 
     stats = {"missing": 0, "missing_codes": []}
     tree_nodes = build_tree_nodes(
@@ -2001,7 +2050,46 @@ def get_single_fg_tree_detail(root_fg, month, item_types=None, weighted_prices=N
     }
 
 
+def load_bom_rows(month, root_fg=None):
+    """{root_fg: [edge, ...]} for one month (one FG, or all of them in one read)."""
+    conn = sqlite3.connect(ANALYTICS_DB)
+    cur = conn.cursor()
+    sql = """
+        SELECT root_fg, parent_code, child_code, child_item, norm_qty, level,
+               company, unit, process, wip_store, child_item_type
+        FROM bom_tree WHERE month = ?"""
+    args = [month]
+    if root_fg is not None:
+        sql += " AND root_fg = ?"
+        args.append(root_fg)
+    try:
+        cur.execute(sql + " ORDER BY rowid", args)
+        fetched = cur.fetchall()
+    except sqlite3.OperationalError:
+        fetched = []
+    conn.close()
+    grouped = {}
+    for r in fetched:
+        grouped.setdefault(r[0], []).append(
+            {"root_fg": r[0], "parent_code": r[1], "child_code": r[2], "child_item": r[3],
+             "norm_qty": r[4], "level": r[5], "company": r[6], "unit": r[7],
+             "process": r[8], "wip_store": r[9], "child_item_type": r[10]})
+    return grouped
+
+
 def get_all_fg_total_costs(month):
+    """Cached wrapper - see compute_all_fg_total_costs. Cleared whenever data changes."""
+    cached = _fg_total_cost_cache.get(month)
+    if cached is not None and time.time() - cached[1] < _PART_COST_CACHE_TTL_SECONDS:
+        return cached[0]
+    generation = _cache_generation
+    result = compute_all_fg_total_costs(month)
+    if generation == _cache_generation:
+        _fg_total_cost_cache[month] = (result, time.time())
+    return result
+
+
+def compute_all_fg_total_costs(month):
     """
     For every FG with a stored BOM tree in this month, the FULLY ROLLED UP
     cost - its own Part Cost Calc/weighted price plus every Production
@@ -2013,15 +2101,10 @@ def get_all_fg_total_costs(month):
 
     Returns {fg_code: {"total_cost": X, "is_missing": bool, "missing_count": N}}
     """
-    conn = sqlite3.connect(ANALYTICS_DB)
-    cur = conn.cursor()
-    try:
-        cur.execute("SELECT DISTINCT root_fg FROM bom_tree WHERE month = ?", (month,))
-        root_fgs = [r[0] for r in cur.fetchall()]
-    except sqlite3.OperationalError:
-        conn.close()
+    all_rows = load_bom_rows(month)
+    root_fgs = list(all_rows)
+    if not root_fgs:
         return {}
-    conn.close()
 
     item_types = get_item_types_for_month(month)
     weighted_prices = get_weighted_prices_for_month(month)
@@ -2031,7 +2114,8 @@ def get_all_fg_total_costs(month):
 
     result = {}
     for root_fg in root_fgs:
-        detail = get_single_fg_tree_detail(root_fg, month, item_types, weighted_prices, months_desc, cost_cache)
+        detail = get_single_fg_tree_detail(root_fg, month, item_types, weighted_prices, months_desc, cost_cache,
+                                           bom_rows=all_rows[root_fg])
         result[root_fg] = {
             "total_cost": detail["total_cost"],
             "is_missing": detail["is_missing"],
@@ -4327,4 +4411,5 @@ if __name__ == "__main__":
     if not load_saved_erp_login():
         ask_erp_login_at_startup()
     start_auto_sync()
+    schedule_cache_warmup()              # first page loads after a restart are fast too
     serve()
